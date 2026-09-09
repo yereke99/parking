@@ -1,0 +1,253 @@
+# Kazakhstan parking ANPR runtime configuration.
+#
+# Every operational threshold lives here. Nothing in the pipeline carries an unexplained
+# constant. Values below are starting points tuned against video/car.mp4 on a development
+# machine, not universal deployment values: re-tune the ROIs, the motion thresholds and the
+# stop window against footage from the actual barrier.
+
+camera:
+  # A file path, a numeric device index, an rtsp:// URL, or a full GStreamer pipeline.
+  source: video/car.mp4
+  # auto | file | device | rtsp | gstreamer. auto infers from the source string.
+  kind: auto
+  camera_id: gate-01
+  width: 1920
+  height: 1080
+  fps: 25
+  # Ask the RTSP stack for TCP. UDP loses packets under load and produces torn frames.
+  rtsp_tcp: true
+  # Driver-side buffering. 1 means the newest frame, which is what a barrier needs.
+  capture_buffer_size: 1
+  reconnect_initial_backoff_ms: 500
+  reconnect_max_backoff_ms: 15000
+  # No frame for this long counts as a dead stream and triggers a reconnect.
+  read_timeout_ms: 5000
+  # Restart video files at the end instead of stopping. Soak testing only.
+  loop_file: false
+  # Replay video files at their own frame rate rather than as fast as they decode, so pointing
+  # the application at a clip behaves like a camera. The benchmark tool is unaffected.
+  realtime_file: true
+
+inference:
+  # auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
+  # auto picks the best provider ONNX Runtime actually offers on this machine.
+  backend: auto
+  device_id: 0
+  # FP16 for the TensorRT provider. Ignored elsewhere.
+  fp16: true
+  # Serialised TensorRT engines. Built once by tools/build_trt_engines.sh, reused afterwards,
+  # so a normal start does not pay the engine build cost.
+  engine_cache_dir: models/trt_cache
+  # Fail startup rather than silently falling back to a slower provider.
+  strict_backend: false
+  # ONNX Runtime thread pools. These only matter for the CPU fallback: on Jetson the detector
+  # and OCR run on the GPU. Measured on an 8-core development machine with 6 performance cores,
+  # detector latency was 64.5 ms at 2 threads, 38.3 ms at 4, and 44.7 ms at 8, so oversubscribing
+  # costs as much as undersubscribing. Re-measure on the target rather than assuming.
+  intra_op_threads: 4
+  inter_op_threads: 1
+
+# All ROIs are normalized [x, y, width, height] fractions of the frame.
+roi:
+  # Cheap frame differencing zone, the only thing evaluated while idle.
+  motion: [0.0, 0.15, 1.0, 0.75]
+  # The only region the plate detector ever sees. Everything outside costs nothing.
+  detection: [0.05, 0.15, 0.90, 0.70]
+  # A tracked plate centred here counts as near the barrier.
+  near_barrier: [0.10, 0.25, 0.80, 0.60]
+  # Stop confirmation is only accepted inside this zone.
+  stop: [0.10, 0.28, 0.80, 0.55]
+  # OCR only runs on plates centred here.
+  recognition: [0.05, 0.20, 0.90, 0.65]
+
+motion:
+  # Working width of the differencing image. Smaller is cheaper and less noise-sensitive.
+  frame_width: 320
+  # Per-pixel absolute difference that counts as changed.
+  pixel_threshold: 24
+  # Changed-pixel fraction that counts as vehicle-scale motion.
+  threshold: 0.030
+  # Changed-pixel fraction below which the scene counts as quiet. This is also the gate that
+  # wakes the detector while idle: anything above it earns one detector call at the idle
+  # cadence. A vehicle still far from the camera moves few pixels, so gating the detector on
+  # the full vehicle-scale threshold above would miss the approach.
+  quiet_threshold: 0.006
+  # How far back the comparison frame is taken. Differencing adjacent frames measures speed,
+  # and a vehicle creeping toward the barrier moves too few pixels between two frames to clear
+  # any threshold that also rejects sensor noise. Comparing across an interval measures
+  # displacement, which is what actually separates an approaching vehicle from an empty scene.
+  reference_interval_ms: 200
+  # Weight of the newest sample in the smoothed score.
+  smoothing: 0.35
+  # Motion must persist this long before anything wakes up.
+  min_motion_ms: 250
+
+detector:
+  model: models/license_plate_detector.onnx
+  input_size: 640
+  confidence_threshold: 0.50
+  nms_threshold: 0.45
+  letterbox_pad: 114
+  swap_rb: true
+  # Detector cadence per state. This is the main compute lever: the detector never runs faster
+  # than the interval for the current state, whatever the camera frame rate is.
+  interval_idle_ms: 200          # 5 FPS, and only when motion is present
+  interval_approaching_ms: 100   # 10 FPS
+  interval_near_ms: 66           # ~15 FPS
+  interval_recognition_ms: 40    # 25 FPS during the OCR burst
+  interval_cooldown_ms: 300      # just enough to notice the vehicle leaving
+  # Skip the detector entirely while idle until the motion detector sees something.
+  require_motion_in_idle: true
+
+ocr:
+  # Fast Plate OCR ONNX model plus the YAML shipped with it. Image size, colour mode,
+  # interpolation, alphabet, padding character and slot count are all read from that YAML,
+  # so switching to another Fast Plate OCR model needs no code change.
+  model: models/plate_ocr.onnx
+  plate_config: models/plate_ocr_config.yaml
+  # Mean character confidence a reading needs before it reaches the validator.
+  min_confidence: 0.55
+  # A reading containing any character below this is discarded.
+  min_char_confidence: 0.30
+  # Hard ceiling on OCR calls per recognition session.
+  max_attempts: 12
+
+quality:
+  # Hard gates. A crop failing any of these never reaches OCR.
+  min_plate_width_px: 90
+  min_plate_height_px: 22
+  min_sharpness: 45.0
+  min_brightness: 35.0
+  max_brightness: 225.0
+  max_clipping_ratio: 0.22
+  # Combined score a crop must reach to be worth an OCR call.
+  min_score: 0.30
+  # Reference values that normalise the individual scores into [0, 1].
+  sharpness_reference: 160.0
+  contrast_reference: 48.0
+  brightness_reference: 135.0
+  # Optional CLAHE pass for crops that pass the hard gates but score poorly. Off by default:
+  # measure on real footage before turning it on, it is not free.
+  enable_enhancement: false
+  enhance_below_score: 0.45
+  clahe_clip_limit: 2.0
+
+tracking:
+  min_iou: 0.20
+  # Fallback association distance as a fraction of the frame diagonal.
+  max_center_distance_ratio: 0.06
+  max_age_ms: 1200
+  min_hits: 2
+  box_smoothing: 0.55
+
+stop_detection:
+  # Rolling window over which movement is measured.
+  window_ms: 600
+  # Movement must stay under all three limits for this long to count as stopped.
+  stop_duration_ms: 500
+  # Centre displacement across the window, relative to the plate box width.
+  max_center_displacement_ratio: 0.18
+  # Relative plate width change across the window.
+  max_size_change_ratio: 0.12
+  max_speed_px_per_s: 40.0
+
+consensus:
+  min_samples: 3
+  required_votes: 3
+  min_agreement: 0.60
+  min_avg_confidence: 0.65
+  min_final_confidence: 0.68
+  # A single frame is never enough unless this is explicitly turned on.
+  allow_single_frame: false
+  single_frame_confidence: 0.95
+
+recognition:
+  timeout_ms: 3000
+  cooldown_ms: 4000
+  leave_confirmation_ms: 800
+  track_lost_timeout_ms: 1500
+  duplicate_suppression_ms: 10000
+
+validation:
+  letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  # Slot classes: D digit, L letter from `letters`, R region-code digit checked against
+  # `regions`. Add a layout here rather than changing code.
+  formats:
+    - name: current_individual     # 123 ABC 02
+      pattern: DDDLLLRR
+      allow_corrections: true
+      weight: 1.0
+    - name: current_legal_entity   # 123 AB 02
+      pattern: DDDLLRR
+      allow_corrections: true
+      weight: 1.0
+    - name: legacy_1993            # A 123 BCD
+      pattern: LDDDLLL
+      allow_corrections: true
+      weight: 0.9
+  regions:
+    "01": Astana
+    "02": Almaty
+    "03": Akmola region
+    "04": Aktobe region
+    "05": Almaty region
+    "06": Atyrau region
+    "07": West Kazakhstan region
+    "08": Zhambyl region
+    "09": Karaganda region
+    "10": Kostanay region
+    "11": Kyzylorda region
+    "12": Mangystau region
+    "13": Turkistan region
+    "14": Pavlodar region
+    "15": North Kazakhstan region
+    "16": East Kazakhstan region
+    "17": Shymkent
+    "18": Abay region
+    "19": Zhetysu region
+    "20": Ulytau region
+  # Only glyph pairs that genuinely collide in plate fonts. A character with no entry here is
+  # never rewritten, so the validator cannot invent a plausible-looking plate.
+  digit_confusions:      # applied only in D and R slots
+    O: "0"
+    Q: "0"
+    D: "0"
+    I: "1"
+    L: "1"
+    Z: "2"
+    S: "5"
+    G: "6"
+    B: "8"
+  letter_confusions:     # applied only in L slots
+    "0": O
+    "1": I
+    "2": Z
+    "5": S
+    "6": G
+    "8": B
+  # Corrections allowed in one reading before it is called ambiguous instead of repaired.
+  max_corrections: 2
+  # OCR confidence a corrected reading needs to still count as high confidence.
+  high_confidence_threshold: 0.80
+  # Confidence multiplier by number of corrections: none, one, two or more.
+  correction_multipliers: [1.0, 0.92, 0.82]
+
+debug:
+  visualize: false
+  save_crops: false
+  output_dir: debug_frames
+  max_files: 500
+  # One log line per processed frame. Benchmarking only, far too noisy for production.
+  frame_timeline: false
+
+performance:
+  # OpenCV's internal thread pool. Keep it small so the device retains CPU headroom.
+  opencv_threads: 2
+  # Latest-frame slot. Fixed at 1 so latency cannot accumulate behind the pipeline.
+  frame_queue_size: 1
+  # Periodic metrics line. 0 disables it.
+  metrics_interval_ms: 60000
+
+logging:
+  # error | warn | info | debug
+  level: info

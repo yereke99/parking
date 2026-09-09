@@ -1,0 +1,129 @@
+# Benchmark configuration for the bundled sample clip, video/car.mp4.
+#
+# The clip is a slow camera orbit around a parked Nissan Skyline carrying a Japanese plate that
+# reads BR45IL. It is not a Kazakhstan plate and not a barrier approach, so it cannot measure
+# Kazakhstan accuracy. What it can measure is everything else: detector and OCR latency, the
+# state machine, tracking, stop detection, quality filtering, and multi-frame consensus.
+#
+# The only difference from config/default.yaml is the plate layout, swapped to the clip's format
+# so the whole path through to a confirmed event is exercised. Every timing and threshold is
+# identical to production, which is what makes the numbers comparable.
+#
+# Run:  ./build/kz_anpr_benchmark --video video/car.mp4 --config config/benchmark.yaml
+
+camera:
+  source: video/car.mp4
+  kind: file
+  camera_id: benchmark
+  width: 1920
+  height: 1080
+  fps: 24
+  # The benchmark drives the pipeline directly, so pacing would only slow the run down.
+  realtime_file: false
+
+inference:
+  backend: auto
+  fp16: true
+  engine_cache_dir: models/trt_cache
+  intra_op_threads: 4
+  inter_op_threads: 1
+
+roi:
+  motion: [0.0, 0.15, 1.0, 0.75]
+  detection: [0.05, 0.15, 0.90, 0.70]
+  near_barrier: [0.10, 0.25, 0.80, 0.60]
+  stop: [0.10, 0.28, 0.80, 0.55]
+  recognition: [0.05, 0.20, 0.90, 0.65]
+
+motion:
+  frame_width: 320
+  pixel_threshold: 24
+  threshold: 0.030
+  quiet_threshold: 0.006
+  reference_interval_ms: 200
+  smoothing: 0.35
+  min_motion_ms: 250
+
+detector:
+  model: models/license_plate_detector.onnx
+  input_size: 640
+  confidence_threshold: 0.50
+  nms_threshold: 0.45
+  interval_idle_ms: 200
+  interval_approaching_ms: 100
+  interval_near_ms: 66
+  interval_recognition_ms: 40
+  interval_cooldown_ms: 300
+  require_motion_in_idle: true
+
+ocr:
+  model: models/plate_ocr.onnx
+  plate_config: models/plate_ocr_config.yaml
+  min_confidence: 0.55
+  min_char_confidence: 0.30
+  max_attempts: 12
+
+quality:
+  min_plate_width_px: 90
+  min_plate_height_px: 22
+  min_sharpness: 45.0
+  min_brightness: 35.0
+  max_brightness: 225.0
+  max_clipping_ratio: 0.22
+  min_score: 0.30
+  enable_enhancement: false
+
+tracking:
+  min_iou: 0.20
+  max_center_distance_ratio: 0.06
+  max_age_ms: 1200
+  min_hits: 2
+  box_smoothing: 0.55
+
+stop_detection:
+  window_ms: 600
+  stop_duration_ms: 500
+  max_center_displacement_ratio: 0.18
+  max_size_change_ratio: 0.12
+  max_speed_px_per_s: 40.0
+
+consensus:
+  min_samples: 3
+  required_votes: 3
+  min_agreement: 0.60
+  min_avg_confidence: 0.65
+  min_final_confidence: 0.68
+  allow_single_frame: false
+
+recognition:
+  timeout_ms: 3000
+  cooldown_ms: 4000
+  leave_confirmation_ms: 800
+  track_lost_timeout_ms: 1500
+  duplicate_suppression_ms: 10000
+
+validation:
+  letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  # The clip's plate: two letters, two digits, two letters. The OCR model alternates between
+  # reading position five as I and as 1, so this configuration also exercises the letter-slot
+  # confusion repair and the multi-frame vote that settles it.
+  formats:
+    - name: sample_clip_jp
+      pattern: LLDDLL
+      allow_corrections: true
+      weight: 1.0
+  max_corrections: 2
+  high_confidence_threshold: 0.80
+
+debug:
+  visualize: false
+  save_crops: false
+  frame_timeline: false
+
+performance:
+  opencv_threads: 2
+  frame_queue_size: 1
+  metrics_interval_ms: 0
+
+logging:
+  level: info

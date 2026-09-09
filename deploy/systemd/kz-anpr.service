@@ -1,0 +1,27 @@
+[Unit]
+Description=Kazakhstan parking ANPR
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kz-anpr
+Group=kz-anpr
+SupplementaryGroups=video
+ExecStart=/opt/kz-anpr/bin/kz_anpr --config /etc/kz-anpr/default.yaml
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=120
+StartLimitBurst=5
+WorkingDirectory=/opt/kz-anpr
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/kz-anpr
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
+
