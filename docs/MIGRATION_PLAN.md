@@ -1,7 +1,8 @@
 # Migration Plan
 
-Status of this pass: implemented. This document records what the audit found, what changes,
-and why, so the C++ result can be compared against the Python prototype.
+Status: historical Fast Plate OCR migration record. The current default is the pinned Nomeroff
+integration documented in [NOMEROFF_INTEGRATION.md](NOMEROFF_INTEGRATION.md); the material below
+records the earlier C++ rewrite and remains as baseline context.
 
 ## 1. What the Python prototype does
 
@@ -44,7 +45,7 @@ Gaps against the current requirements:
 | Consensus | one batch call at the end | streaming, with early stop once the criteria are met |
 | Config | two-level flat parser | real YAML subset parser, nested maps and sequences |
 | Metrics | none | per-stage latency, counters, rejection reasons |
-| Target | Wiren Board 8 | Jetson Orin Nano Super first, portable CPU fallback |
+| Target | Wiren Board 8 | Orin Nano 4 GB validation, Orin Nano/Super 8 GB production |
 
 ## 3. Design decisions
 

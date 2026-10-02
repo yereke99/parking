@@ -24,13 +24,35 @@ number: there is no ground truth and no negative footage.
 
 ## OCR
 
+### Current production path: Nomeroff Net
+
+The default is Nomeroff Net 4.0.1 pinned to commit
+`931388550b83f045c0ac951a77daa23df22f962d`, using its dedicated `kz` model. Explicit `ru`, `by`,
+`kg`, and `su` modes are configurable. See [Nomeroff integration](NOMEROFF_INTEGRATION.md) for the
+API, confidence derivation, process boundary, device policy and GPL-3.0 flag.
+
+On the local Mac the KZ model imported, loaded, warmed up, and recognized one detector crop from
+the bundled Japanese clip. It returned raw `S7352` at mean confidence 0.489 and weakest-character
+confidence 0.328 in 10.9 ms for that isolated call. The result is intentionally rejected by the
+configured confidence/format gates and says nothing about KZ accuracy. The warmed worker reported
+about 599 MB peak RSS. These are development observations, not Jetson or accuracy results.
+
+A later end-to-end smoke test decoded all 296 frames, ran the exported detector on every tenth
+frame (30 calls, 30 post-NMS detections), and sent three crops through one persistent KZ worker.
+Those warmed OCR calls took 5.35–5.76 ms and produced inconsistent strings from the Japanese
+plate, as expected. A four-source smoke test also opened four 1920x1080 captures while sharing one
+detector instance and one worker. These validate loading, transport, and bounded sharing only;
+they are not the native benchmark harness, a KZ accuracy measurement, or a Jetson result.
+
+### Legacy comparison path: Fast Plate OCR
+
 EasyOCR is gone from the production path. It required Python and PyTorch at runtime, was general
 scene-text rather than plate-specific, took **11.7 seconds** per call on this machine, and
 produced strings that were not valid Kazakhstan plates.
 
 | Field | Value |
 | --- | --- |
-| Production file | `models/plate_ocr.onnx`, 5.0 MB |
+| Legacy comparison file | `models/plate_ocr.onnx`, 5.0 MB |
 | Model | Fast Plate OCR `cct-s-v2-global` |
 | Architecture | Compact Convolutional Transformer |
 | Input | `input`, **uint8**, `Nx64x128x3`, NHWC, RGB |
@@ -76,7 +98,7 @@ Fast Plate OCR on the development machine, ONNX Runtime CPU:
 
 Against EasyOCR's 11,723 ms average on the same clip, that is roughly a 660-fold reduction.
 
-### Kazakhstan accuracy: unmeasured
+### Legacy model Kazakhstan accuracy: unmeasured
 
 The model's own region list contains 65 countries plus `Unknown`. **Kazakhstan is not among
 them.** Kazakhstan plates use Latin characters in layouts close to several post-Soviet states

@@ -106,6 +106,28 @@ struct DetectorConfig {
 };
 
 struct OcrConfig {
+    /// Production OCR implementation. Nomeroff is the default; fast_plate_ocr remains only for
+    /// controlled A/B measurements while the migration is validated.
+    std::string backend{"nomeroff"};
+    /// Persistent Python worker used by the Nomeroff adapter. It lives in an isolated venv and
+    /// is started once, not once per crop or camera.
+    std::string python_executable{".venv-nomeroff/bin/python"};
+    std::string worker_script{"tools/nomeroff_worker.py"};
+    std::string model_cache_dir{"models/nomeroff"};
+    /// auto | cpu | mps | cuda. Auto probes CUDA first, then MPS, then CPU. The worker performs
+    /// a real warm-up and falls back from MPS to CPU if an operation is unsupported.
+    std::string device{"auto"};
+    /// Explicit regional OCR model. Automatic country classification is intentionally avoided:
+    /// upstream documents that its classifier is primarily tuned for Ukrainian plates.
+    std::string region_mode{"kz"};
+    /// 1 for ordinary horizontal plates, 2 for Nomeroff's supported split/two-line path.
+    int lines_count{1};
+    bool fp16{true};
+    std::int64_t startup_timeout_ms{180000};
+    std::int64_t request_timeout_ms{10000};
+
+    // Legacy Fast Plate OCR settings. Kept behind `backend: fast_plate_ocr` until the labelled
+    // KZ/RU comparison is complete; they are not touched by the Nomeroff hot path.
     std::string model{"models/plate_ocr.onnx"};
     /// Fast Plate OCR YAML shipped with the model. Every preprocessing and decoding value is
     /// read from it, so a different Fast Plate OCR model needs no code change.
@@ -213,6 +235,9 @@ struct PlateFormat {
 };
 
 struct ValidationConfig {
+    /// auto selects the built-in KZ/RU profile from ocr.region_mode. custom preserves the
+    /// configured formats for other CIS deployments.
+    std::string profile{"auto"};
     /// Letters permitted in `L` slots.
     std::string letters{"ABCDEFGHIJKLMNOPQRSTUVWXYZ"};
     std::vector<PlateFormat> formats;
@@ -281,9 +306,14 @@ struct ConfigLoadResult {
 
 /// Returns the built-in Kazakhstan validation rules, used when the file omits `validation`.
 ValidationConfig defaultKazakhstanValidation();
+ValidationConfig defaultRussianValidation();
 
 ConfigLoadResult loadConfigFile(const std::string& path);
 ConfigLoadResult loadConfigText(const std::string& text);
 bool validateConfig(const AnprConfig& config, std::string& error);
+
+/// Applies the documented environment overrides. Kept separate from file parsing so unit tests
+/// remain deterministic and callers can report invalid environment values before model loading.
+bool applyEnvironmentOverrides(AnprConfig& config, std::string& error);
 
 }  // namespace anpr

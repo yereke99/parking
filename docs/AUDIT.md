@@ -96,7 +96,8 @@ Recorded after the C++ rewrite. The sections above describe the state before it.
 
 ## What changed since the first pass
 
-The target moved from Wiren Board 8 to Jetson Orin Nano Super, and the OCR question was settled:
+The target moved from Wiren Board 8 to an initial Jetson Orin Nano 4 GB validation device and a
+future Orin Nano / Orin Nano Super 8 GB production device, and the OCR question was settled:
 the placeholder `CtcPlateOcr`, written against a `kz_plate_ocr.onnx` that never existed, is
 replaced by real Fast Plate OCR inference. Alongside that:
 
@@ -158,10 +159,17 @@ no timeouts. Address and undefined-behaviour sanitizers are clean over 888 frame
 
 Unchanged from the first pass, and none of them are addressable from this repository:
 
-- **Kazakhstan accuracy is unmeasured.** The OCR model's training regions do not include
-  Kazakhstan, and there is no labelled Kazakhstan evaluation set here.
+- **Kazakhstan accuracy is unmeasured.** Nomeroff now supplies a dedicated KZ model, but there is
+  still no labelled Kazakhstan evaluation set in this repository.
 - **The only sample clip is a parked Japanese-plate car**, not a barrier approach.
 - **The detector's ONNX metadata declares AGPL-3.0.** That needs a decision before release.
 - **No Jetson hardware was available.** Every number above is from a development Mac. TensorRT
   FP16 latency, GPU utilisation and thermal behaviour are all unmeasured.
 - Night, glare, rain, dirty plate and oblique-angle cases are unrepresented.
+
+## Nomeroff migration addendum
+
+The default OCR path is now Nomeroff Net 4.0.1 at pinned commit
+`931388550b83f045c0ac951a77daa23df22f962d`. The existing detector, tracker, quality gate,
+validator, consensus and event interface were retained. The isolated worker and shared model
+architecture are documented in [NOMEROFF_INTEGRATION.md](NOMEROFF_INTEGRATION.md).

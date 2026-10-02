@@ -72,4 +72,13 @@ std::unique_ptr<IPlateDetector> makePlateDetector(const DetectorConfig& detector
                                                   const InferenceConfig& inference,
                                                   PipelineMetrics* metrics, std::string& error);
 
+class SharedPlateDetectorCore;
+
+/// Loads one detector model for a group of streams. Each client serializes access to the
+/// non-thread-safe inference session while retaining per-stream total latency/counters.
+std::shared_ptr<SharedPlateDetectorCore> makeSharedPlateDetector(
+    const DetectorConfig& detector, const InferenceConfig& inference, std::string& error);
+std::unique_ptr<IPlateDetector> makeSharedPlateDetectorClient(
+    const std::shared_ptr<SharedPlateDetectorCore>& core, PipelineMetrics* metrics);
+
 }  // namespace anpr

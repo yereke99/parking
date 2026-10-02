@@ -28,24 +28,27 @@ CameraSource (file | USB | RTSP | GStreamer)
   -> StopDetector           rolling displacement, size and speed window
   -> VehicleStateMachine    decides what the next frame deserves
   -> QualityAssessor        size, blur, exposure and clipping gates
-  -> FastPlateOcr           uint8 NHWC, fixed-slot decode
+  -> NomeroffRecognizer     dedicated configured regional CTC model
   -> PlateValidator         configurable slot patterns and confusion repair
   -> PlateConsensus         streaming multi-frame vote, stops early when satisfied
   -> PlateSink              PlateRecognitionEvent
 ```
 
-## Threading
+## Threading and multiple streams
 
-Two threads.
+Each source owns one capture thread and one latest-frame slot. A single coordinator visits the
+streams round-robin and runs their independent state machines. Detector weights and the persistent
+Nomeroff worker are shared; tracking, stop detection, consensus and event identity remain per
+camera.
 
 **Capture thread.** Owns the camera handle, reads frames, publishes into a one-slot buffer that
 overwrites. It also owns reconnection with exponential backoff. It never waits for inference,
 because an RTSP stream that is not drained backs up in the driver and everything the pipeline
 later sees is stale.
 
-**Processing thread.** Everything else, in order. The detector and the OCR model never run
-concurrently on the same frame, there is one vehicle of interest, and a worker pool would add
-handover latency without shortening the critical path.
+**Processing thread.** Everything else, in order. Shared detector and OCR access is serialized,
+which bounds CUDA memory and is the safe reference path for the 4 GB target. If a later batch
+benchmark proves beneficial, the OCR abstraction already exposes batch recognition.
 
 A frame that the processing thread did not collect before the next one arrived is dropped and
 counted. At a barrier the newest view of the vehicle is what matters; the one from 400 ms ago is
@@ -71,10 +74,10 @@ code. That gives FP16 engines and an engine cache while keeping one code path fo
 a hand-written builder would duplicate memory management and turn the x86 development path into
 a second implementation.
 
-Buffers are allocated once. The session owns its input and output host buffers, the detector
+Detector buffers are allocated once. The session owns its input and output host buffers, the detector
 holds `cv::Mat` headers directly over the input tensor so `cv::split` writes the planar NCHW
-layout in place, and the OCR stage resizes straight into the uint8 input tensor. A frame
-allocates nothing.
+layout in place. Nomeroff owns its PyTorch tensors in the persistent worker and receives only the
+quality-selected crop; a full frame never crosses the process boundary.
 
 ## State machine
 

@@ -1,4 +1,5 @@
 #include "anpr/common/config.hpp"
+#include "anpr/validation/plate_validator.hpp"
 
 #include "test_framework.hpp"
 
@@ -127,4 +128,50 @@ TEST("the inference backend name is parsed and rejected when unknown") {
     CHECK_EQ(ok.config.inference.backend, anpr::InferenceBackend::kTensorRT);
     const auto bad = anpr::loadConfigText("inference:\n  backend: magic\n");
     CHECK(!bad.ok);
+}
+
+TEST("Nomeroff is the default OCR backend with explicit Kazakhstan routing") {
+    anpr::AnprConfig config;
+    config.validation = anpr::defaultKazakhstanValidation();
+    CHECK_EQ(config.ocr.backend, std::string("nomeroff"));
+    CHECK_EQ(config.ocr.region_mode, std::string("kz"));
+    CHECK_EQ(config.ocr.device, std::string("auto"));
+}
+
+TEST("invalid Nomeroff device region and line settings fail configuration") {
+    CHECK(!anpr::loadConfigText("ocr:\n  device: quantum\n").ok);
+    CHECK(!anpr::loadConfigText("ocr:\n  region_mode: auto\n").ok);
+    CHECK(!anpr::loadConfigText("ocr:\n  lines_count: 3\n").ok);
+}
+
+TEST("legacy OCR remains selectable only by explicit configuration") {
+    const auto loaded = anpr::loadConfigText("ocr:\n  backend: fast_plate_ocr\n");
+    CHECK(loaded.ok);
+    CHECK_EQ(loaded.config.ocr.backend, std::string("fast_plate_ocr"));
+}
+
+TEST("Russian OCR mode selects Russian position-aware validation") {
+    const auto loaded = anpr::loadConfigText("ocr:\n  region_mode: ru\n");
+    CHECK(loaded.ok);
+    CHECK_EQ(loaded.config.validation.letters, std::string("ABCEHKMOPTXY"));
+    const anpr::PlateValidator validator(loaded.config.validation);
+    CHECK(validator.validate("A123BC77", 0.95).valid());
+    CHECK(validator.validate("A123BC777", 0.95).valid());
+    CHECK(!validator.validate("123ABC02", 0.95).valid());
+}
+
+TEST("other CIS OCR modes require an explicit validation profile") {
+    const auto automatic = anpr::loadConfigText("ocr:\n  region_mode: by\n");
+    CHECK(!automatic.ok);
+    const auto custom = anpr::loadConfigText(R"(
+ocr:
+  region_mode: by
+validation:
+  profile: custom
+  letters: "ABCEHIKMOPT"
+  formats:
+    - name: by_private
+      pattern: DDDDLLD
+)");
+    CHECK(custom.ok);
 }

@@ -2,6 +2,23 @@
 
 ## How to run
 
+Current reproducible multi-stream harness:
+
+```sh
+python3 tools/benchmark.py --streams 1
+python3 tools/benchmark.py --streams 2
+python3 tools/benchmark.py --streams 4
+python3 tools/benchmark.py --matrix
+```
+
+It writes timestamped JSON and Markdown under `benchmark_results/`, samples the full process tree
+(including the shared Nomeroff worker), and records GPU/Jetson telemetry when those tools exist.
+The harness defaults to `config/default.yaml`, including the production KZ validation profile.
+Pass `--config config/benchmark.yaml` only when exercising the bundled Japanese demo clip's event
+path; that profile must not be used for a KZ accuracy result.
+The historical commands and numbers below predate the Nomeroff migration and remain useful only
+as the Fast Plate OCR baseline.
+
 ```sh
 # Full pipeline, including the state machine, tracking, OCR and consensus.
 ./build/kz_anpr_benchmark --video video/car.mp4 --config config/benchmark.yaml

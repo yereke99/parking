@@ -1,3 +1,2 @@
-clip_id,path,condition,event_id,expected_plate,region_code,start_ms,stop_ms,notes
-gate_01,video/car.mp4,unknown,event_001,,,,,sample clip has no verified Kazakhstan ground truth
-
+clip_id,path,condition,event_id,expected_plate,plate_region,region_code,start_ms,stop_ms,notes
+gate_01,video/car.mp4,unknown,event_001,,,,,,sample clip has no verified Kazakhstan ground truth

@@ -17,4 +17,7 @@ data/processed/
 __pycache__/
 *.pyc
 .venv-fast/
+.venv-nomeroff/
+benchmark_results/
+models/nomeroff/
 .DS_Store

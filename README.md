@@ -1,10 +1,11 @@
 # Kazakhstan Parking ANPR
 
-Native C++ automatic number plate recognition for a parking barrier. No Python in the deployed
-runtime.
+Native C++ automatic number plate recognition for a parking barrier, with Nomeroff Net running in
+one persistent isolated Python worker for regional OCR. Detection, tracking, state, validation,
+consensus, event delivery and camera ingestion remain C++.
 
-Primary target is an NVIDIA Jetson Orin Nano Super running TensorRT FP16. The same binary runs on
-x86 or macOS against the ONNX Runtime CPU provider for development.
+The first hardware validation target is an NVIDIA Jetson Orin Nano 4 GB; the production target is
+an Orin Nano / Orin Nano Super 8 GB. The same binary runs on x86 or macOS for development.
 
 ```text
 camera
@@ -12,7 +13,7 @@ camera
   -> plate detector at a state-dependent cadence
   -> lightweight tracking and stop detection
   -> crop quality gate
-  -> Fast Plate OCR
+  -> Nomeroff Net KZ/RU/CIS crop OCR
   -> configurable plate-format validation
   -> multi-frame consensus
   -> PlateRecognitionEvent
@@ -31,7 +32,8 @@ cmake --build build-core -j
 ./build-core/kz_anpr_core_tests
 ```
 
-The runtime needs OpenCV and, for OCR, ONNX Runtime:
+The C++ runtime needs OpenCV and ONNX Runtime for the existing detector. Nomeroff is installed in
+its own environment and does not modify system Python:
 
 ```sh
 # Debian, Ubuntu, JetPack
@@ -42,23 +44,27 @@ brew install cmake opencv onnxruntime
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
+
+tools/setup_nomeroff_env.sh
+.venv-nomeroff/bin/python tools/nomeroff_worker.py --probe --region kz
 ```
 
-Fast Plate OCR needs a uint8 input tensor, which OpenCV DNN cannot supply, so ONNX Runtime is
-required for recognition. Without it the detector still builds and the OCR stage refuses to start
-with a clear message rather than feeding the model the wrong thing.
+On Jetson, install NVIDIA's JetPack-matched PyTorch first, then use
+`tools/setup_nomeroff_env.sh --jetson`. The setup verifies that the NVIDIA PyTorch version was not
+replaced. See [the Nomeroff integration notes](docs/NOMEROFF_INTEGRATION.md).
 
 Options: `-DKZ_ANPR_BUILD_RUNTIME=OFF`, `-DKZ_ANPR_BUILD_TESTS=OFF`,
 `-DKZ_ANPR_WITH_ONNXRUNTIME=OFF`, `-DKZ_ANPR_SANITIZERS=ON`.
 
 ## Models
 
-Both models must be on disk. Nothing is downloaded at runtime.
+Required model artifacts must be on disk. Nothing is downloaded at runtime.
 
 ```text
 models/license_plate_detector.onnx    YOLOv8n plate detector
-models/plate_ocr.onnx                 Fast Plate OCR, cct-s-v2-global
-models/plate_ocr_config.yaml          the model's own contract, read at startup
+models/nomeroff/                      ignored local cache populated by the setup probe
+models/plate_ocr.onnx                 legacy A/B backend only
+models/plate_ocr_config.yaml          legacy A/B backend contract
 ```
 
 Export the detector from the Ultralytics checkpoint:
@@ -68,19 +74,14 @@ python3 tools/export_detector_onnx.py --weights license_plate_detector.pt --imgs
 mv license_plate_detector.onnx models/
 ```
 
-Fetch the OCR model once, on a machine with network access:
+Fetch and verify the pinned Nomeroff KZ model once, on a machine with network access:
 
 ```sh
-python3 -m venv .venv-fast
-.venv-fast/bin/pip install 'fast-plate-ocr[onnx]'
-.venv-fast/bin/python tools/fetch_ocr_model.py --model cct-s-v2-global-model
+tools/setup_nomeroff_env.sh
 ```
 
-Both scripts are offline development tools. Neither is needed, or present, at runtime.
-
-Image size, colour mode, interpolation, alphabet, padding character and slot count all come from
-`plate_ocr_config.yaml`, so switching to another Fast Plate OCR model is a file swap. The loader
-cross-checks that file against the ONNX signature and refuses a mismatched pair at startup.
+The setup pins Nomeroff Net 4.0.1 to commit `931388550b83f045c0ac951a77daa23df22f962d`.
+Production starts with the cache already populated; normal runtime must not depend on a download.
 
 ## Run
 
@@ -88,6 +89,10 @@ cross-checks that file against the ONNX signature and refuses a mismatched pair 
 ./build/kz_anpr --config config/default.yaml --source video/car.mp4
 ./build/kz_anpr --config config/default.yaml --source 0 --camera-id gate-01
 ./build/kz_anpr --config config/default.yaml --source "rtsp://user:pass@camera/stream1"
+
+# Multiple sources share detector and OCR weights; each keeps independent tracking/state.
+./build/kz_anpr --config config/default.yaml \
+  --source cam1.mp4 --source cam2.mp4 --source cam3.mp4 --source cam4.mp4
 
 ./build/kz_anpr --print-backends              # what this machine can actually run
 ./build/kz_anpr --config config/default.yaml --warmup   # load models, build TensorRT engines
@@ -122,6 +127,12 @@ It is called from the processing thread. Anything that can block belongs on its 
 ## Benchmark
 
 ```sh
+python3 tools/benchmark.py --streams 1
+python3 tools/benchmark.py --streams 2
+python3 tools/benchmark.py --streams 4
+python3 tools/benchmark.py --matrix
+
+# Lower-level deterministic single-file benchmark remains available.
 ./build/kz_anpr_benchmark --video video/car.mp4 --config config/benchmark.yaml
 ./build/kz_anpr_benchmark --video video/car.mp4 --config config/benchmark.yaml --detector-only
 ```
@@ -154,6 +165,7 @@ once the C++ implementation is validated on real Kazakhstan footage.
 - [Audit and baseline](docs/AUDIT.md)
 - [Kazakhstan plate formats](docs/KAZAKHSTAN_PLATES.md)
 - [Model evaluation](docs/MODEL_EVALUATION.md)
+- [Nomeroff integration and licensing](docs/NOMEROFF_INTEGRATION.md)
 - [Jetson deployment](docs/DEPLOYMENT_JETSON.md)
 - [Wiren Board 8 deployment, CPU only](docs/DEPLOYMENT_WB8.md)
 - [Camera setup](docs/CAMERA_SETUP.md)

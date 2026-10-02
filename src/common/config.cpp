@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -166,6 +167,7 @@ CameraKind cameraKindFromString(const std::string& text, bool& ok) {
 }
 
 void readValidation(Reader& reader, ValidationConfig& validation, std::string& error) {
+    reader.get("validation.profile", validation.profile);
     reader.get("validation.letters", validation.letters);
     reader.get("validation.max_corrections", validation.max_corrections);
     reader.get("validation.high_confidence_threshold", validation.high_confidence_threshold);
@@ -325,6 +327,16 @@ void readAll(Reader& reader, AnprConfig& config, std::string& error) {
     reader.get("detector.interval_cooldown_ms", config.detector.interval_cooldown_ms);
     reader.get("detector.require_motion_in_idle", config.detector.require_motion_in_idle);
 
+    reader.get("ocr.backend", config.ocr.backend);
+    reader.get("ocr.python_executable", config.ocr.python_executable);
+    reader.get("ocr.worker_script", config.ocr.worker_script);
+    reader.get("ocr.model_cache_dir", config.ocr.model_cache_dir);
+    reader.get("ocr.device", config.ocr.device);
+    reader.get("ocr.region_mode", config.ocr.region_mode);
+    reader.get("ocr.lines_count", config.ocr.lines_count);
+    reader.get("ocr.fp16", config.ocr.fp16);
+    reader.get("ocr.startup_timeout_ms", config.ocr.startup_timeout_ms);
+    reader.get("ocr.request_timeout_ms", config.ocr.request_timeout_ms);
     reader.get("ocr.model", config.ocr.model);
     reader.get("ocr.plate_config", config.ocr.plate_config);
     reader.get("ocr.min_confidence", config.ocr.min_confidence);
@@ -465,6 +477,24 @@ ValidationConfig defaultKazakhstanValidation() {
     return validation;
 }
 
+ValidationConfig defaultRussianValidation() {
+    ValidationConfig validation;
+    validation.profile = "auto";
+    // Latin glyphs used on ordinary Russian registration plates. The dedicated Nomeroff model
+    // emits these lookalikes rather than Cyrillic code points.
+    validation.letters = "ABCEHKMOPTXY";
+    validation.formats = {
+        PlateFormat{"ru_private_2_digit_region", "LDDDLLDD", true, 1.0},
+        PlateFormat{"ru_private_3_digit_region", "LDDDLLDDD", true, 1.0},
+    };
+    validation.digit_confusions = {
+        {'O', '0'}, {'Q', '0'}, {'D', '0'}, {'I', '1'}, {'L', '1'},
+        {'Z', '2'}, {'S', '5'}, {'G', '6'}, {'B', '8'},
+    };
+    validation.letter_confusions = {{'0', 'O'}, {'8', 'B'}};
+    return validation;
+}
+
 ConfigLoadResult loadConfigText(const std::string& text) {
     ConfigLoadResult result;
     result.config.validation = defaultKazakhstanValidation();
@@ -502,6 +532,11 @@ ConfigLoadResult loadConfigText(const std::string& text) {
         if (!claimed) {
             result.unknown_keys.push_back(leaf);
         }
+    }
+
+    if (result.config.validation.profile == "auto" &&
+        result.config.ocr.region_mode == "ru") {
+        result.config.validation = defaultRussianValidation();
     }
 
     if (!validateConfig(result.config, result.error)) {
@@ -572,6 +607,34 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
     if (!require(config.ocr.max_attempts > 0, "ocr.max_attempts must be positive")) {
         return false;
     }
+    if (!require(config.ocr.backend == "nomeroff" || config.ocr.backend == "fast_plate_ocr",
+                 "ocr.backend must be nomeroff or fast_plate_ocr")) {
+        return false;
+    }
+    if (!require(config.ocr.device == "auto" || config.ocr.device == "cpu" ||
+                     config.ocr.device == "mps" || config.ocr.device == "cuda",
+                 "ocr.device must be auto, cpu, mps or cuda")) {
+        return false;
+    }
+    if (!require(config.ocr.region_mode == "kz" || config.ocr.region_mode == "ru" ||
+                     config.ocr.region_mode == "by" || config.ocr.region_mode == "kg" ||
+                     config.ocr.region_mode == "su",
+                 "ocr.region_mode must be kz, ru, by, kg or su")) {
+        return false;
+    }
+    if (!require(config.ocr.lines_count == 1 || config.ocr.lines_count == 2,
+                 "ocr.lines_count must be 1 or 2")) {
+        return false;
+    }
+    if (!require(config.ocr.startup_timeout_ms > 0 && config.ocr.request_timeout_ms > 0,
+                 "ocr startup and request timeouts must be positive")) {
+        return false;
+    }
+    if (config.ocr.backend == "nomeroff" &&
+        !require(!config.ocr.python_executable.empty() && !config.ocr.worker_script.empty(),
+                 "Nomeroff requires ocr.python_executable and ocr.worker_script")) {
+        return false;
+    }
     if (!require(config.quality.min_plate_width_px > 0 && config.quality.min_plate_height_px > 0,
                  "quality plate size limits must be positive")) {
         return false;
@@ -608,6 +671,15 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
         return false;
     }
     if (!require(!config.validation.formats.empty(), "validation.formats must not be empty")) {
+        return false;
+    }
+    if (!require(config.validation.profile == "auto" || config.validation.profile == "custom",
+                 "validation.profile must be auto or custom")) {
+        return false;
+    }
+    if (!require(config.validation.profile == "custom" || config.ocr.region_mode == "kz" ||
+                     config.ocr.region_mode == "ru",
+                 "BY/KG/SU modes require validation.profile=custom with deployment formats")) {
         return false;
     }
     if (!require(!config.validation.letters.empty(), "validation.letters must not be empty")) {
@@ -647,6 +719,38 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
         return false;
     }
     return true;
+}
+
+bool applyEnvironmentOverrides(AnprConfig& config, std::string& error) {
+    auto stringOverride = [](const char* name, std::string& target) {
+        if (const char* value = std::getenv(name); value != nullptr && *value != '\0') {
+            target = value;
+        }
+    };
+    stringOverride("OCR_BACKEND", config.ocr.backend);
+    stringOverride("DEVICE", config.ocr.device);
+    stringOverride("PLATE_REGION_MODE", config.ocr.region_mode);
+
+    if (config.validation.profile == "auto") {
+        if (config.ocr.region_mode == "kz") {
+            config.validation = defaultKazakhstanValidation();
+        } else if (config.ocr.region_mode == "ru") {
+            config.validation = defaultRussianValidation();
+        }
+    }
+
+    if (const char* value = std::getenv("ENABLE_FP16"); value != nullptr && *value != '\0') {
+        const std::string text(value);
+        if (text == "1" || text == "true" || text == "yes" || text == "on") {
+            config.ocr.fp16 = true;
+        } else if (text == "0" || text == "false" || text == "no" || text == "off") {
+            config.ocr.fp16 = false;
+        } else {
+            error = "INVALID_CONFIG: ENABLE_FP16 must be true or false";
+            return false;
+        }
+    }
+    return validateConfig(config, error);
 }
 
 }  // namespace anpr

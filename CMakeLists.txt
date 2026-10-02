@@ -69,6 +69,8 @@ if(KZ_ANPR_BUILD_RUNTIME)
             src/inference/inference_session.cpp
             src/inference/opencv_dnn_session.cpp
             src/ocr/fast_plate_ocr.cpp
+            src/ocr/nomeroff_ocr.cpp
+            src/ocr/plate_ocr.cpp
             src/pipeline/anpr_pipeline.cpp
             src/pipeline/motion_detector.cpp
             src/pipeline/quality_assessor.cpp
@@ -101,8 +103,9 @@ if(KZ_ANPR_BUILD_RUNTIME)
         else()
             message(WARNING
                 "ONNX Runtime not found. Building with the OpenCV DNN backend only. "
-                "Fast Plate OCR needs a uint8 tensor input that OpenCV DNN cannot supply, so OCR "
-                "will refuse to start. Install ONNX Runtime for a usable runtime.")
+                "The default Nomeroff OCR worker remains usable; the legacy Fast Plate OCR "
+                "comparison backend will refuse to start because OpenCV DNN cannot supply its "
+                "uint8 input tensor.")
         endif()
 
         add_library(kz_anpr_runtime ${KZ_ANPR_RUNTIME_SOURCES})

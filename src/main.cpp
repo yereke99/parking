@@ -1,8 +1,11 @@
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <opencv2/core.hpp>
 
@@ -11,6 +14,7 @@
 #include "anpr/common/config.hpp"
 #include "anpr/common/logging.hpp"
 #include "anpr/inference/inference_session.hpp"
+#include "anpr/detection/plate_detector.hpp"
 #include "anpr/pipeline/anpr_pipeline.hpp"
 #include "anpr/pipeline/plate_sink.hpp"
 
@@ -28,7 +32,7 @@ void usage() {
 
   --config PATH      configuration file (default config/default.yaml)
   --source S         camera source override: file path, device index, rtsp:// URL,
-                     or a GStreamer pipeline
+                     or a GStreamer pipeline. Repeat for multiple streams.
   --camera-id ID     identifier written into every event
   --backend B        auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
   --log-level L      error | warn | info | debug
@@ -46,7 +50,7 @@ Exit codes: 0 success, 1 unexpected error, 2 configuration error, 3 camera unava
 
 struct Cli {
     std::string config_path{"config/default.yaml"};
-    std::string source;
+    std::vector<std::string> sources;
     std::string camera_id;
     std::string backend;
     std::string log_level;
@@ -84,7 +88,9 @@ bool parseArgs(int argc, char** argv, Cli& cli, std::string& error) {
         } else if (arg == "--config") {
             if (!value(cli.config_path)) return false;
         } else if (arg == "--source" || arg == "--video" || arg == "--rtsp" || arg == "--camera") {
-            if (!value(cli.source)) return false;
+            std::string source;
+            if (!value(source)) return false;
+            cli.sources.push_back(std::move(source));
         } else if (arg == "--camera-id") {
             if (!value(cli.camera_id)) return false;
         } else if (arg == "--backend") {
@@ -132,8 +138,13 @@ int main(int argc, char** argv) {
     }
     anpr::AnprConfig config = loaded.config;
 
-    if (!cli.source.empty()) {
-        config.camera.source = cli.source;
+    if (!anpr::applyEnvironmentOverrides(config, error)) {
+        std::cerr << error << '\n';
+        return 2;
+    }
+
+    if (cli.sources.size() == 1) {
+        config.camera.source = cli.sources.front();
         config.camera.kind = anpr::CameraKind::kAuto;
     }
     if (!cli.camera_id.empty()) {
@@ -166,10 +177,128 @@ int main(int argc, char** argv) {
                        .add("config", cli.config_path)
                        .add("camera_id", config.camera.camera_id)
                        .add("source", anpr::maskCredentials(config.camera.source))
+                       .add("streams", cli.sources.empty() ? 1 : cli.sources.size())
                        .add("requested_backend", anpr::toString(config.inference.backend))
+                       .add("ocr_backend", config.ocr.backend)
+                       .add("ocr_device", config.ocr.device)
+                       .add("plate_region_mode", config.ocr.region_mode)
                        .add("opencv_threads", config.performance.opencv_threads));
 
     try {
+        if (cli.sources.size() > 1) {
+            struct StreamRuntime {
+                anpr::JsonStdoutSink sink;
+                std::unique_ptr<anpr::AnprPipeline> pipeline;
+                std::unique_ptr<anpr::FramePump> pump;
+                std::string camera_id;
+                bool finished{false};
+            };
+
+            auto shared_detector =
+                anpr::makeSharedPlateDetector(config.detector, config.inference, error);
+            if (shared_detector == nullptr) {
+                anpr::logEvent(anpr::LogLevel::kError, "model_load_failed",
+                               anpr::LogFields().add("reason", error));
+                return 4;
+            }
+
+            std::vector<std::unique_ptr<StreamRuntime>> streams;
+            streams.reserve(cli.sources.size());
+            for (std::size_t index = 0; index < cli.sources.size(); ++index) {
+                auto stream = std::make_unique<StreamRuntime>();
+                anpr::AnprConfig stream_config = config;
+                stream_config.camera.source = cli.sources[index];
+                stream_config.camera.kind = anpr::CameraKind::kAuto;
+                stream_config.camera.camera_id =
+                    (cli.camera_id.empty() ? config.camera.camera_id : cli.camera_id) + "-" +
+                    std::to_string(index + 1);
+                stream->camera_id = stream_config.camera.camera_id;
+                stream->pipeline =
+                    std::make_unique<anpr::AnprPipeline>(stream_config, stream->sink);
+                stream->pipeline->setDetector(anpr::makeSharedPlateDetectorClient(
+                    shared_detector, &stream->pipeline->metrics()));
+                if (!stream->pipeline->loadModels(error)) {
+                    anpr::logEvent(anpr::LogLevel::kError, "model_load_failed",
+                                   anpr::LogFields()
+                                       .add("camera_id", stream->camera_id)
+                                       .add("reason", error));
+                    return 4;
+                }
+                auto source = anpr::makeCameraSource(stream_config.camera, error);
+                if (source == nullptr) {
+                    anpr::logEvent(anpr::LogLevel::kError, "camera_unavailable",
+                                   anpr::LogFields()
+                                       .add("camera_id", stream->camera_id)
+                                       .add("reason", error));
+                    return 3;
+                }
+                stream->pump = std::make_unique<anpr::FramePump>(stream_config.camera,
+                                                                 std::move(source));
+                streams.push_back(std::move(stream));
+            }
+
+            if (cli.warmup) {
+                if (!streams.front()->pipeline->warmup(error)) {
+                    anpr::logEvent(anpr::LogLevel::kError, "warmup_failed",
+                                   anpr::LogFields().add("reason", error));
+                    return 4;
+                }
+                return 0;
+            }
+
+            for (auto& stream : streams) {
+                if (!stream->pump->start()) {
+                    return 3;
+                }
+                anpr::logEvent(anpr::LogLevel::kInfo, "stream_started",
+                               anpr::LogFields().add("camera_id", stream->camera_id));
+            }
+
+            while (!g_stop_requested.load()) {
+                bool active = false;
+                bool processed = false;
+                for (auto& stream : streams) {
+                    if (stream->finished) {
+                        continue;
+                    }
+                    active = true;
+                    anpr::Frame frame;
+                    if (stream->pump->waitForFrame(frame, 2)) {
+                        stream->pipeline->processFrame(frame);
+                        processed = true;
+                    } else if (stream->pump->finished()) {
+                        stream->finished = true;
+                        anpr::logEvent(anpr::LogLevel::kInfo, "stream_stopped",
+                                       anpr::LogFields().add("camera_id", stream->camera_id));
+                    }
+                }
+                if (!active) {
+                    break;
+                }
+                if (!processed) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+
+            std::int64_t total_frames = 0;
+            std::int64_t total_confirmed = 0;
+            for (auto& stream : streams) {
+                stream->pump->stop();
+                const anpr::PumpStats stats = stream->pump->stats();
+                stream->pipeline->metrics().frames_captured = stats.captured;
+                stream->pipeline->metrics().frames_dropped = stats.dropped;
+                stream->pipeline->metrics().camera_reconnects = stats.reconnects;
+                total_frames += stream->pipeline->metrics().frames_processed;
+                total_confirmed += stream->pipeline->metrics().plates_confirmed;
+            }
+            anpr::logEvent(anpr::LogLevel::kInfo, "shutdown",
+                           anpr::LogFields()
+                               .add("streams", streams.size())
+                               .add("frames_processed", total_frames)
+                               .add("plates_confirmed", total_confirmed));
+            return 0;
+        }
+
         anpr::JsonStdoutSink sink;
         anpr::AnprPipeline pipeline(config, sink);
         if (!pipeline.loadModels(error)) {

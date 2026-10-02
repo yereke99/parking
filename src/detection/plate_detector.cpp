@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <stdexcept>
 
 #include <opencv2/dnn.hpp>
@@ -198,6 +199,72 @@ std::unique_ptr<IPlateDetector> makePlateDetector(const DetectorConfig& detector
         error = std::string("UNSUPPORTED_MODEL: detector: ") + failure.what();
         return nullptr;
     }
+}
+
+class SharedPlateDetectorCore {
+public:
+    SharedPlateDetectorCore(std::unique_ptr<IPlateDetector> detector,
+                            std::shared_ptr<PipelineMetrics> aggregate_metrics)
+        : detector(std::move(detector)), aggregate_metrics(std::move(aggregate_metrics)) {}
+
+    std::mutex mutex;
+    std::unique_ptr<IPlateDetector> detector;
+    std::shared_ptr<PipelineMetrics> aggregate_metrics;
+};
+
+namespace {
+
+class SharedPlateDetectorClient final : public IPlateDetector {
+public:
+    SharedPlateDetectorClient(std::shared_ptr<SharedPlateDetectorCore> core,
+                              PipelineMetrics* metrics)
+        : core_(std::move(core)), metrics_(metrics) {}
+
+    const std::vector<Detection>& detect(const cv::Mat& frame) override {
+        const auto started = std::chrono::steady_clock::now();
+        {
+            const std::lock_guard<std::mutex> guard(core_->mutex);
+            detections_ = core_->detector->detect(frame);
+        }
+        if (metrics_ != nullptr) {
+            metrics_->detector_total.add(std::chrono::duration<double, std::milli>(
+                                             std::chrono::steady_clock::now() - started)
+                                             .count());
+            ++metrics_->detector_calls;
+            metrics_->detections += static_cast<std::int64_t>(detections_.size());
+        }
+        return detections_;
+    }
+
+    [[nodiscard]] std::string backendName() const override {
+        return "shared:" + core_->detector->backendName();
+    }
+
+private:
+    std::shared_ptr<SharedPlateDetectorCore> core_;
+    PipelineMetrics* metrics_;
+    std::vector<Detection> detections_;
+};
+
+}  // namespace
+
+std::shared_ptr<SharedPlateDetectorCore> makeSharedPlateDetector(
+    const DetectorConfig& detector, const InferenceConfig& inference, std::string& error) {
+    auto aggregate_metrics = std::make_shared<PipelineMetrics>();
+    auto implementation = makePlateDetector(detector, inference, aggregate_metrics.get(), error);
+    if (implementation == nullptr) {
+        return nullptr;
+    }
+    return std::make_shared<SharedPlateDetectorCore>(std::move(implementation),
+                                                      std::move(aggregate_metrics));
+}
+
+std::unique_ptr<IPlateDetector> makeSharedPlateDetectorClient(
+    const std::shared_ptr<SharedPlateDetectorCore>& core, PipelineMetrics* metrics) {
+    if (core == nullptr) {
+        return nullptr;
+    }
+    return std::make_unique<SharedPlateDetectorClient>(core, metrics);
 }
 
 }  // namespace anpr

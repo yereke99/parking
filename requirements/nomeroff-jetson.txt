@@ -1,0 +1,23 @@
+# Deliberately excludes torch and torchvision. Install NVIDIA's JetPack-matched wheels first.
+# These are direct runtime requirements for Nomeroff's crop OCR path; transitive dependencies are
+# resolved inside .venv-nomeroff and verified not to replace the preinstalled torch build.
+setuptools==80.9.0
+numpy==1.26.4
+cython==3.0.12
+scikit-image==0.24.0
+asyncio==3.4.3
+gitpython==3.1.42
+pycocotools==2.0.8
+ujson==5.10.0
+pillow==11.1.0
+tqdm==4.67.1
+matplotlib==3.10.0
+scipy==1.15.1
+pyyaml==6.0.2
+seaborn==0.13.2
+pytorch-lightning==1.8.6
+gevent==24.11.1
+termcolor==2.5.0
+scikit-learn==1.6.1
+albumentations==2.0.3
+modelhub-client @ https://github.com/ria-com/modelhub-client/archive/b6d4ec55554494c9bf3cb9816249d7946368ed97.tar.gz

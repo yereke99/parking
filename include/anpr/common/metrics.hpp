@@ -25,6 +25,7 @@ public:
     [[nodiscard]] double maxMs() const { return max_ms_; }
     [[nodiscard]] double percentileMs(double fraction) const;
     void reset();
+    void mergeFrom(const LatencyStat& other);
 
 private:
     std::array<double, kCapacity> samples_{};
@@ -59,6 +60,7 @@ private:
 /// needs no synchronisation; the capture-side counters are copied in under the pump's own lock.
 struct PipelineMetrics {
     LatencyStat capture_latency;      ///< frame capture timestamp to processing pick-up
+    LatencyStat decode_latency;       ///< source read/decode (live sources may include waiting)
     LatencyStat motion_latency;       ///< cheap ROI frame differencing
     LatencyStat detector_preprocess;  ///< letterbox plus tensor fill
     LatencyStat detector_inference;   ///< session run only
@@ -67,6 +69,8 @@ struct PipelineMetrics {
     LatencyStat ocr_inference;
     LatencyStat ocr_total;
     LatencyStat quality_latency;
+    LatencyStat tracking_latency;
+    LatencyStat postprocess_latency;  ///< validation and temporal-consensus update
     LatencyStat frame_total;             ///< whole processing tick
     LatencyStat recognition_latency;     ///< stop confirmed to event emitted
 
@@ -87,6 +91,7 @@ struct PipelineMetrics {
     std::int64_t camera_reconnects{0};
 
     [[nodiscard]] std::string summary() const;
+    void mergeFrom(const PipelineMetrics& other);
 };
 
 }  // namespace anpr

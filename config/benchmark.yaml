@@ -57,6 +57,16 @@ detector:
   require_motion_in_idle: true
 
 ocr:
+  backend: nomeroff
+  python_executable: .venv-nomeroff/bin/python
+  worker_script: tools/nomeroff_worker.py
+  model_cache_dir: models/nomeroff
+  device: auto
+  region_mode: kz
+  lines_count: 1
+  fp16: true
+  startup_timeout_ms: 180000
+  request_timeout_ms: 10000
   model: models/plate_ocr.onnx
   plate_config: models/plate_ocr_config.yaml
   min_confidence: 0.55
@@ -103,6 +113,7 @@ recognition:
   duplicate_suppression_ms: 10000
 
 validation:
+  profile: custom                # this file validates the bundled Japanese development clip
   letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
   # The clip's plate: two letters, two digits, two letters. The OCR model alternates between
   # reading position five as I and as 1, so this configuration also exercises the letter-slot

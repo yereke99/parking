@@ -100,9 +100,21 @@ detector:
   require_motion_in_idle: true
 
 ocr:
-  # Fast Plate OCR ONNX model plus the YAML shipped with it. Image size, colour mode,
-  # interpolation, alphabet, padding character and slot count are all read from that YAML,
-  # so switching to another Fast Plate OCR model needs no code change.
+  # Primary OCR backend. `fast_plate_ocr` remains available only for measured A/B comparison.
+  backend: nomeroff
+  # Nomeroff Net 4.0.1 at pinned commit 931388550b83 runs in one persistent isolated Python
+  # worker shared by every stream.
+  python_executable: .venv-nomeroff/bin/python
+  worker_script: tools/nomeroff_worker.py
+  model_cache_dir: models/nomeroff
+  device: auto                    # CUDA -> tested MPS -> CPU
+  region_mode: kz                 # explicit kz | ru | by | kg | su
+  lines_count: 1                  # set 2 only for known box/two-line camera lanes
+  fp16: true                      # used only on CUDA after a successful warm-up
+  startup_timeout_ms: 180000      # model load; normal OCR requests use the shorter timeout below
+  request_timeout_ms: 10000
+
+  # Legacy Fast Plate OCR model contract, read only when backend=fast_plate_ocr.
   model: models/plate_ocr.onnx
   plate_config: models/plate_ocr_config.yaml
   # Mean character confidence a reading needs before it reaches the validator.
@@ -169,6 +181,7 @@ recognition:
   duplicate_suppression_ms: 10000
 
 validation:
+  profile: auto                  # built-in KZ/RU; use custom with audited BY/KG/SU formats
   letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
   # Slot classes: D digit, L letter from `letters`, R region-code digit checked against
   # `regions`. Add a layout here rather than changing code.

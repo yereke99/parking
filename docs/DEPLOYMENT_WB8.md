@@ -1,7 +1,7 @@
 # Wiren Board 8 Deployment
 
 Secondary target. The primary production target is now
-[Jetson Orin Nano Super](DEPLOYMENT_JETSON.md); this page covers the CPU-only ARM64 path.
+[Jetson Orin Nano](DEPLOYMENT_JETSON.md); this page covers the CPU-only ARM64 path.
 
 Target: ARM64/AArch64 Debian on Wiren Board 8, Cortex-A53 CPU only.
 
@@ -9,8 +9,10 @@ Set `inference.backend: onnx_cpu` and expect detector latency well above the Jet
 Cortex-A53 has no vector performance comparable to the development machine used for the numbers
 in [benchmarks](../benchmarks/README.md), so measure on the device before committing to it.
 
-ONNX Runtime is still required: Fast Plate OCR takes a uint8 input tensor that OpenCV DNN cannot
-supply. Install the aarch64 CPU build of ONNX Runtime alongside `libopencv-dev`.
+The default Nomeroff/PyTorch OCR path has not been benchmarked on this small CPU-only board and may
+not be practical. ONNX Runtime is still required for the detector. If the legacy Fast Plate OCR
+comparison backend is explicitly selected, it also requires ONNX Runtime for its uint8 input.
+Install the aarch64 CPU build alongside `libopencv-dev` and measure before deployment.
 
 ## Packages
 

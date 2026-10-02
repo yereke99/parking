@@ -95,6 +95,7 @@ public:
         }
         // `read` writes into the existing buffer when the geometry is unchanged, so a steady
         // stream performs no per-frame allocation.
+        const auto decode_started = std::chrono::steady_clock::now();
         if (!capture_.read(frame.image) || frame.image.empty()) {
             if (kind_ == CameraKind::kFile) {
                 if (config_.loop_file && capture_.set(cv::CAP_PROP_POS_FRAMES, 0)) {
@@ -104,6 +105,10 @@ public:
             }
             return ReadStatus::kFailed;
         }
+
+        frame.decode_ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - decode_started)
+                              .count();
 
         frame.capture_ms = monotonicMs();
         frame.sequence = ++sequence_;

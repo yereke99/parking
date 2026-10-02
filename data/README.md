@@ -21,5 +21,8 @@ Each external dataset entry must record:
 - whether redistribution is allowed;
 - split group identifier so frames from the same vehicle/event do not leak between train/test.
 
-The repository currently contains only `video/car.mp4`, which is not enough for production accuracy claims.
+For benchmark manifests, set `expected_plate` and `plate_region` (`kz`, `ru`, or another CIS
+model label). The harness reports overall and per-region exact accuracy, character accuracy, and
+CER. `region_code` remains the numeric subdivision printed on the plate and is not a country tag.
 
+The repository currently contains only `video/car.mp4`, which is not enough for production accuracy claims.

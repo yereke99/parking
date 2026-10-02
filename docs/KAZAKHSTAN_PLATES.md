@@ -108,9 +108,8 @@ legal text, but none should be added without a labelled sample to test against.
 
 ## OCR Model Caveat
 
-The shipped OCR model is Fast Plate OCR `cct-s-v2-global`, trained on a global Latin-alphabet
-plate corpus. **Kazakhstan is not in its training region list**, which covers 65 countries plus
-`Unknown`. Kazakhstan plates use Latin characters in layouts close to other post-Soviet states in
-that list, so they are broadly in distribution character-wise, but this has not been measured
-against Kazakhstan ground truth. See [model evaluation](MODEL_EVALUATION.md).
-
+The default is now Nomeroff Net's dedicated `kz` OCR model, not the legacy global Fast Plate OCR
+model. A country-specific model is a better basis, but this repository still has no labelled KZ
+evaluation set. Do not turn the upstream model's dataset accuracy into a parking-camera accuracy
+claim; evaluate the actual distance, angle, shutter, glare, weather and plate mix. See
+[model evaluation](MODEL_EVALUATION.md).

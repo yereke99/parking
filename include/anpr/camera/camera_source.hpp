@@ -17,6 +17,9 @@ struct Frame {
     /// Stream position for file sources, otherwise equal to `capture_ms`.
     std::int64_t stream_ms{0};
     std::int64_t sequence{0};
+    /// Time spent in the source read/decode call. For live capture this may include waiting for
+    /// the next frame; for files it is the decode latency.
+    double decode_ms{0.0};
 };
 
 enum class ReadStatus {

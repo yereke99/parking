@@ -1,11 +1,16 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
 
 namespace anpr {
+
+struct InferenceConfig;
+struct OcrConfig;
+struct PipelineMetrics;
 
 /// Why a reading was not usable. Reported so rejections are visible in metrics and logs instead
 /// of disappearing as an empty string.
@@ -43,8 +48,24 @@ public:
 
     /// Reads a plate from a BGR crop, the layout OpenCV produces. Never throws.
     virtual OcrResult recognize(const cv::Mat& plate) = 0;
+    /// Batch-capable abstraction. Backends may override this with true batch inference; the
+    /// default preserves compatibility and executes in order through the same model instance.
+    virtual std::vector<OcrResult> recognizeBatch(const std::vector<cv::Mat>& plates) {
+        std::vector<OcrResult> results;
+        results.reserve(plates.size());
+        for (const cv::Mat& plate : plates) {
+            results.push_back(recognize(plate));
+        }
+        return results;
+    }
     [[nodiscard]] virtual std::string backendName() const = 0;
     [[nodiscard]] virtual std::string modelDescription() const = 0;
 };
+
+/// Selects the configured OCR backend. Nomeroff is the production default; the legacy backend
+/// remains available for controlled A/B benchmarks until labelled KZ validation is complete.
+std::unique_ptr<IPlateOcr> makePlateOcr(const OcrConfig& ocr,
+                                        const InferenceConfig& inference,
+                                        PipelineMetrics* metrics, std::string& error);
 
 }  // namespace anpr

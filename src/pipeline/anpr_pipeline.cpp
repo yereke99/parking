@@ -13,7 +13,7 @@
 #endif
 
 #include "anpr/common/logging.hpp"
-#include "anpr/ocr/fast_plate_ocr.hpp"
+#include "anpr/ocr/plate_ocr.hpp"
 
 namespace anpr {
 namespace {
@@ -57,13 +57,17 @@ AnprPipeline::~AnprPipeline() {
 }
 
 bool AnprPipeline::loadModels(std::string& error) {
-    detector_ = makePlateDetector(config_.detector, config_.inference, &metrics_, error);
     if (detector_ == nullptr) {
-        return false;
+        detector_ = makePlateDetector(config_.detector, config_.inference, &metrics_, error);
+        if (detector_ == nullptr) {
+            return false;
+        }
     }
-    ocr_ = makeFastPlateOcr(config_.ocr, config_.inference, &metrics_, error);
     if (ocr_ == nullptr) {
-        return false;
+        ocr_ = makePlateOcr(config_.ocr, config_.inference, &metrics_, error);
+        if (ocr_ == nullptr) {
+            return false;
+        }
     }
     logEvent(LogLevel::kInfo, "models_ready",
              LogFields()
@@ -185,7 +189,6 @@ void AnprPipeline::runDetector(const cv::Mat& frame, std::int64_t now_ms) {
             mapped_detections_.push_back(mapped);
         }
     }
-    tracker_.update(mapped_detections_, now_ms, frame.cols, frame.rows);
     last_detector_ms_ = now_ms;
 }
 
@@ -231,25 +234,36 @@ void AnprPipeline::runRecognitionTick(const cv::Mat& frame, std::int64_t now_ms)
         return;
     }
 
-    // Largest plate first: if two are visible, the one at the barrier is the bigger one.
-    std::sort(mapped_detections_.begin(), mapped_detections_.end(),
-              [](const Detection& lhs, const Detection& rhs) {
-                  return lhs.box.area() > rhs.box.area();
-              });
+    // Recognition belongs to the track that opened this session. Never mix observations from a
+    // second visible plate into the same temporal vote. `last_box` is the raw current detection
+    // after tracker.update, so the matching detection has effectively perfect overlap.
+    const TrackedPlate* recognition_track = nullptr;
+    for (const TrackedPlate& track : tracker_.tracks()) {
+        if (track.id == recognition_track_id_) {
+            recognition_track = &track;
+            break;
+        }
+    }
+    if (recognition_track == nullptr) {
+        return;
+    }
 
     int index = 0;
     for (const Detection& detection : mapped_detections_) {
+        if (iou(detection.box, recognition_track->last_box) < 0.90) {
+            continue;
+        }
         if (ocr_attempts_ >= config_.ocr.max_attempts || consensus_.satisfied()) {
             return;
         }
         if (!centerInside(detection.box, config_.roi.recognition, frame.cols, frame.rows)) {
             ++metrics_.crops_rejected_roi;
-            continue;
+            return;
         }
 
         const cv::Rect crop_rect = toRect(detection.box);
         if (crop_rect.empty()) {
-            continue;
+            return;
         }
         const cv::Mat crop = frame(crop_rect);
 
@@ -270,12 +284,15 @@ void AnprPipeline::runRecognitionTick(const cv::Mat& frame, std::int64_t now_ms)
                          .add("width", detection.box.width)
                          .add("sharpness", quality.sharpness)
                          .add("brightness", quality.brightness));
-            continue;
+            return;
         }
 
         const cv::Mat& ocr_input =
             quality_assessor_.enhance(crop, quality, enhanced_crop_) ? enhanced_crop_ : crop;
 
+        // When benchmark/debug crop capture is enabled, retain rejected OCR attempts too. They
+        // are the most useful samples for the failure buckets; production keeps this disabled.
+        const std::optional<std::string> crop_path = saveDebugCrop(ocr_input, now_ms, index++);
         const OcrResult reading = ocr_->recognize(ocr_input);
         ++ocr_attempts_;
         if (!reading.ok()) {
@@ -284,7 +301,7 @@ void AnprPipeline::runRecognitionTick(const cv::Mat& frame, std::int64_t now_ms)
                          .add("reason", toString(reading.rejection))
                          .add("text", reading.text)
                          .add("confidence", reading.confidence));
-            continue;
+            return;
         }
 
         PlateObservation observation;
@@ -295,22 +312,29 @@ void AnprPipeline::runRecognitionTick(const cv::Mat& frame, std::int64_t now_ms)
         observation.image_quality = quality.score;
         observation.plate_box = detection.box;
         observation.timestamp_ms = now_ms;
-        observation.crop_path = saveDebugCrop(ocr_input, now_ms, index++);
+        observation.crop_path = crop_path;
 
-        const PlateValidationStatus status = consensus_.add(observation);
+        PlateValidationStatus status;
+        {
+            ScopedTimer timer(metrics_.postprocess_latency);
+            status = consensus_.add(observation);
+        }
         if (status == PlateValidationStatus::kInvalidFormat ||
             status == PlateValidationStatus::kAmbiguous) {
             ++metrics_.observations_invalid_format;
         }
+        const ConsensusResult current = consensus_.resolve();
         logEvent(LogLevel::kDebug, "ocr_candidate",
                  LogFields()
-                     .add("text", reading.text)
+                     .add("raw", reading.text)
+                     .add("normalized", current.normalized_plate)
                      .add("ocr_confidence", reading.confidence)
                      .add("min_char_confidence", reading.min_char_confidence)
                      .add("detector_confidence", detection.confidence)
                      .add("quality", quality.score)
                      .add("validation", toString(status))
                      .add("model_region", reading.region.empty() ? "none" : reading.region));
+        return;
     }
 }
 
@@ -467,6 +491,7 @@ void AnprPipeline::processFrame(const Frame& frame) {
     const auto tick_started = std::chrono::steady_clock::now();
     ++metrics_.frames_processed;
     metrics_.capture_latency.add(static_cast<double>(monotonicMs() - frame.capture_ms));
+    metrics_.decode_latency.add(frame.decode_ms);
 
     // Video files carry their own timeline so a benchmark run is reproducible; live sources use
     // the capture clock.
@@ -483,14 +508,21 @@ void AnprPipeline::processFrame(const Frame& frame) {
     if (ran_detector) {
         runDetector(frame.image, now_ms);
     } else {
-        tracker_.age(now_ms);
         mapped_detections_.clear();
     }
 
     StateInput input;
     input.timestamp_ms = now_ms;
     input.motion_score = motion.score;
-    input.track = observeTrack(frame.image, now_ms);
+    {
+        ScopedTimer timer(metrics_.tracking_latency);
+        if (ran_detector) {
+            tracker_.update(mapped_detections_, now_ms, frame.image.cols, frame.image.rows);
+        } else {
+            tracker_.age(now_ms);
+        }
+        input.track = observeTrack(frame.image, now_ms);
+    }
 
     const StateUpdate update = state_machine_.update(input);
     if (update.changed) {

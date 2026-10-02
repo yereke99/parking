@@ -1,7 +1,11 @@
-# Jetson Orin Nano Super Deployment
+# Jetson Orin Nano Deployment
 
-Primary production target. Everything below assumes JetPack 6 with CUDA and TensorRT installed
-from the NVIDIA repositories.
+The first benchmark target is an Orin Nano 4 GB; the later production target is an Orin Nano or
+Orin Nano Super 8 GB. Everything below assumes JetPack 6 with CUDA and TensorRT installed from
+the NVIDIA repositories. Validate the exact JetPack/PyTorch combination on both memory sizes.
+
+The detector continues to use ONNX Runtime/TensorRT. OCR uses pinned Nomeroff/PyTorch and is
+installed separately; do not interpret the detector TensorRT setup as OCR acceleration.
 
 For a CPU-only ARM board, see [Wiren Board 8 deployment](DEPLOYMENT_WB8.md); the application is
 the same binary with `inference.backend: onnx_cpu`.
@@ -61,19 +65,27 @@ cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
 
+Install the isolated OCR environment without replacing NVIDIA PyTorch:
+
+```sh
+# Install NVIDIA's PyTorch/torchvision wheels matching this exact JetPack first.
+sudo apt install -y python3-opencv
+tools/setup_nomeroff_env.sh --jetson
+```
+
 ## 4. Models
 
-Both files must be on the device. The runtime never downloads anything.
+The detector file and pre-populated Nomeroff cache must be on the device. Normal runtime should
+not download anything.
 
 ```text
 models/license_plate_detector.onnx
-models/plate_ocr.onnx
-models/plate_ocr_config.yaml
+models/nomeroff/
 ```
 
 See [model evaluation](MODEL_EVALUATION.md) for how each was produced.
 
-## 5. Build the TensorRT engines once
+## 5. Build the detector TensorRT engine once
 
 The TensorRT provider compiles an engine the first time a model runs. That takes minutes and must
 not happen while a vehicle waits at the barrier.
@@ -173,7 +185,12 @@ sudo useradd --system --home /var/lib/kz-anpr --create-home --shell /usr/sbin/no
 sudo usermod -aG video kz-anpr
 sudo install -D -m 0755 build/kz_anpr /opt/kz-anpr/bin/kz_anpr
 sudo install -D -m 0644 config/default.yaml /etc/kz-anpr/default.yaml
+sudo install -D -m 0755 tools/setup_nomeroff_env.sh /opt/kz-anpr/tools/setup_nomeroff_env.sh
+sudo install -D -m 0755 tools/nomeroff_worker.py /opt/kz-anpr/tools/nomeroff_worker.py
+sudo mkdir -p /opt/kz-anpr/requirements
+sudo cp requirements/nomeroff-jetson.txt /opt/kz-anpr/requirements/
 sudo mkdir -p /opt/kz-anpr/models && sudo cp models/*.onnx models/*.yaml /opt/kz-anpr/models/
+sudo /opt/kz-anpr/tools/setup_nomeroff_env.sh --jetson
 sudo chown -R kz-anpr:kz-anpr /var/lib/kz-anpr
 sudo install -D -m 0644 deploy/systemd/kz-anpr.service /etc/systemd/system/kz-anpr.service
 sudo systemctl daemon-reload
@@ -192,9 +209,23 @@ sudo -u kz-anpr /opt/kz-anpr/bin/kz_anpr --config /etc/kz-anpr/default.yaml --wa
 journalctl -u kz-anpr -f
 ```
 
-Expect `event=startup`, then `event=model_loaded` with `backend=tensorrt` for both models, then
+Expect detector `backend=tensorrt`, `event=nomeroff_ready` with the intended model/device, then
 `event=camera_connected`. Drive a car up to the barrier and watch the state transitions through
 to `event=plate_confirmed`.
+
+Run the required matrix without changing the system power mode:
+
+```sh
+python3 tools/benchmark.py --config config/default.yaml --streams 1 \
+    --manifest data/manifests/kz_eval.csv
+python3 tools/benchmark.py --config config/default.yaml --streams 2 \
+    --manifest data/manifests/kz_eval.csv
+python3 tools/benchmark.py --config config/default.yaml --streams 4 \
+    --manifest data/manifests/kz_eval.csv
+```
+
+The collector reads `nvpmodel -q`, `jetson_clocks --show`, and GPU metrics when available, and
+samples the full process tree for CPU/RAM. It never changes the power mode or clock settings.
 
 The periodic `event=metrics` line carries per-stage latencies and counters. Watch
 `detector_avg_ms`, `ocr_avg_ms` and `frames_dropped` for the first day.
