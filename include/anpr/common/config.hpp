@@ -126,6 +126,18 @@ struct OcrConfig {
     std::int64_t startup_timeout_ms{180000};
     std::int64_t request_timeout_ms{10000};
 
+    // Research-only general OCR workers. They deliberately live in isolated environments so
+    // PaddleOCR and EasyOCR cannot replace the JetPack-matched PyTorch/ONNX Runtime packages
+    // used by the production path. The C++ runtime owns one persistent worker per backend and
+    // shares it across camera pipelines.
+    std::string research_worker_script{"tools/research_ocr_worker.py"};
+    std::string research_model_cache_dir{"models/research"};
+    std::string paddle_python_executable{".venv-paddleocr/bin/python"};
+    std::string paddle_model{"eslav_PP-OCRv5_mobile_rec"};
+    std::string paddle_engine{"onnxruntime"};
+    std::string easyocr_python_executable{".venv-easyocr/bin/python"};
+    std::string easyocr_languages{"en"};
+
     // Legacy Fast Plate OCR settings. Kept behind `backend: fast_plate_ocr` until the labelled
     // KZ/RU comparison is complete; they are not touched by the Nomeroff hot path.
     std::string model{"models/plate_ocr.onnx"};

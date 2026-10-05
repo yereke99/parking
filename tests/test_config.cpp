@@ -26,6 +26,14 @@ TEST("shipped default.yaml has no unknown keys") {
     }
 }
 
+TEST("shipped research.yaml loads without unknown keys") {
+    const auto loaded = anpr::loadConfigFile("config/research.yaml");
+    CHECK(loaded.ok);
+    if (!loaded.unknown_keys.empty()) {
+        anpr_test::recordFailure("unknown research config key: " + loaded.unknown_keys.front());
+    }
+}
+
 TEST("unknown keys are reported instead of silently ignored") {
     const auto loaded = anpr::loadConfigText("detector:\n  confidence_treshold: 0.6\n");
     CHECK(loaded.ok);
@@ -148,6 +156,15 @@ TEST("legacy OCR remains selectable only by explicit configuration") {
     const auto loaded = anpr::loadConfigText("ocr:\n  backend: fast_plate_ocr\n");
     CHECK(loaded.ok);
     CHECK_EQ(loaded.config.ocr.backend, std::string("fast_plate_ocr"));
+}
+
+TEST("all four research OCR backends are selectable") {
+    for (const std::string backend : {"fast_plate_ocr", "nomeroff", "paddleocr", "easyocr"}) {
+        const auto loaded = anpr::loadConfigText("ocr:\n  backend: " + backend + "\n");
+        CHECK(loaded.ok);
+        CHECK_EQ(loaded.config.ocr.backend, backend);
+    }
+    CHECK(!anpr::loadConfigText("ocr:\n  backend: unknown\n").ok);
 }
 
 TEST("Russian OCR mode selects Russian position-aware validation") {

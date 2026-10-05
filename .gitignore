@@ -18,6 +18,10 @@ __pycache__/
 *.pyc
 .venv-fast/
 .venv-nomeroff/
+.venv-paddleocr/
+.venv-easyocr/
 benchmark_results/
+/test-output/
 models/nomeroff/
+models/research/
 .DS_Store

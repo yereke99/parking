@@ -73,6 +73,18 @@ sudo apt install -y python3-opencv
 tools/setup_nomeroff_env.sh --jetson
 ```
 
+For the optional four-OCR research comparison, install the two additional isolated workers:
+
+```sh
+tools/setup_research_ocr_envs.sh --all
+```
+
+EasyOCR reuses NVIDIA's JetPack-matched PyTorch. The setup verifies that its version was not
+shadowed. PaddleOCR is configured with its ONNX Runtime inference engine because PaddlePaddle's
+official installer does not support arm64. It therefore requires a Python ONNX Runtime build
+matched to the JetPack release; if that dependency is unavailable, the matrix records PaddleOCR
+as unavailable instead of falling back to an unmeasured or incompatible runtime.
+
 ## 4. Models
 
 The detector file and pre-populated Nomeroff cache must be on the device. Normal runtime should
@@ -223,6 +235,22 @@ python3 tools/benchmark.py --config config/default.yaml --streams 2 \
 python3 tools/benchmark.py --config config/default.yaml --streams 4 \
     --manifest data/manifests/kz_eval.csv
 ```
+
+Run the complete bundled-video OCR research with one command:
+
+```sh
+python3 tools/benchmark.py --research
+```
+
+For a short installation check before the full real-time run:
+
+```sh
+python3 tools/benchmark.py --research --max-frames 300
+```
+
+The full suite uses `config/research.yaml`, not the production thresholds. It runs every
+combination of four OCR backends, three videos, and one/four processing threads and writes a
+timestamped JSON plus a Markdown comparison under `benchmark_results/`.
 
 The collector reads `nvpmodel -q`, `jetson_clocks --show`, and GPU metrics when available, and
 samples the full process tree for CPU/RAM. It never changes the power mode or clock settings.

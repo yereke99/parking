@@ -114,6 +114,17 @@ ocr:
   startup_timeout_ms: 180000      # model load; normal OCR requests use the shorter timeout below
   request_timeout_ms: 10000
 
+  # Research-only crop recognizers. Each runs in a persistent isolated worker and is shared by
+  # all camera pipelines. Install them with tools/setup_research_ocr_envs.sh; production keeps
+  # using Nomeroff unless an on-device benchmark justifies a change.
+  research_worker_script: tools/research_ocr_worker.py
+  research_model_cache_dir: models/research
+  paddle_python_executable: .venv-paddleocr/bin/python
+  paddle_model: eslav_PP-OCRv5_mobile_rec
+  paddle_engine: onnxruntime
+  easyocr_python_executable: .venv-easyocr/bin/python
+  easyocr_languages: en
+
   # Legacy Fast Plate OCR model contract, read only when backend=fast_plate_ocr.
   model: models/plate_ocr.onnx
   plate_config: models/plate_ocr_config.yaml

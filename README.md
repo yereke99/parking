@@ -132,6 +132,9 @@ python3 tools/benchmark.py --streams 2
 python3 tools/benchmark.py --streams 4
 python3 tools/benchmark.py --matrix
 
+# Full research matrix: 4 OCRs x 3 videos x 1/4 processing threads.
+python3 tools/benchmark.py --research
+
 # Lower-level deterministic single-file benchmark remains available.
 ./build/kz_anpr_benchmark --video video/car.mp4 --config config/benchmark.yaml
 ./build/kz_anpr_benchmark --video video/car.mp4 --config config/benchmark.yaml --detector-only
@@ -139,6 +142,49 @@ python3 tools/benchmark.py --matrix
 
 Measured results and the comparison against the Python prototype are in
 [benchmarks/README.md](benchmarks/README.md).
+
+The four OCR implementations available to the benchmark are `fast_plate_ocr`, `nomeroff`,
+`paddleocr`, and `easyocr`. PaddleOCR and EasyOCR are persistent recognition-only workers: the
+native detector has already produced a plate crop, so their scene/document text detectors are
+not run. Install the two optional research environments with
+`tools/setup_research_ocr_envs.sh --all`. See [OCR research](docs/OCR_RESEARCH.md) for the exact
+Jetson procedure, fairness rules, output columns, and hardware caveats.
+
+### Jetson: one video, one processing thread
+
+The collector also records `tegrastats`, RAM, CPU, GPU, temperature and power:
+
+```sh
+python3 tools/benchmark.py \
+  --config config/research.yaml \
+  --video video/parking.mp4 \
+  --ocr-backend nomeroff \
+  --streams 1 \
+  --manifest data/manifests/video_research.csv
+```
+
+Replace `nomeroff` with `fast_plate_ocr`, `paddleocr`, or `easyocr` to test one of the other
+recognizers under identical conditions.
+
+### Jetson: the same video as four cameras / four processing threads
+
+```sh
+python3 tools/benchmark.py \
+  --config config/research.yaml \
+  --video video/parking.mp4 \
+  --ocr-backend nomeroff \
+  --streams 4 \
+  --manifest data/manifests/video_research.csv
+```
+
+The lower-level binary equivalents are:
+
+```sh
+./build/kz_anpr_benchmark --config config/research.yaml --video video/parking.mp4 \
+  --ocr-backend nomeroff --streams 1 --json
+./build/kz_anpr_benchmark --config config/research.yaml --video video/parking.mp4 \
+  --ocr-backend nomeroff --streams 4 --json
+```
 
 ## Configuration
 

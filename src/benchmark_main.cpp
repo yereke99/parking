@@ -38,6 +38,7 @@ void usage() {
   --streams N         simulate N cameras by repeating --video (supported: 1, 2, 4)
   --config PATH       configuration file (default config/default.yaml)
   --backend B         auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
+  --ocr-backend B     fast_plate_ocr | nomeroff | paddleocr | easyocr
   --detector-only     time the detector on every frame, skipping the state machine and OCR
   --max-frames N      stop after N frames
   --repeat N          replay the clip N times, for a longer sample
@@ -52,6 +53,7 @@ struct Cli {
     std::string video;
     std::string config_path{"config/default.yaml"};
     std::string backend;
+    std::string ocr_backend;
     std::vector<std::string> sources;
     int streams{0};
     int warmup_frames{3};
@@ -88,6 +90,12 @@ std::string jsonEscape(const std::string& value) {
 std::string configuredOcrModel(const anpr::OcrConfig& config) {
     if (config.backend == "fast_plate_ocr") {
         return config.model;
+    }
+    if (config.backend == "paddleocr") {
+        return config.paddle_model + " (" + config.paddle_engine + ")";
+    }
+    if (config.backend == "easyocr") {
+        return "EasyOCR languages=" + config.easyocr_languages;
     }
     if (config.lines_count == 2) {
         return config.region_mode == "su" ? "su_2lines_efficientnet_b2"
@@ -332,10 +340,12 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
                                      .count();
 
     const auto warmup_started = std::chrono::steady_clock::now();
-    for (int index = 0; index < cli.warmup_frames; ++index) {
-        if (!runtimes.front()->pipeline->warmup(error)) {
-            std::cerr << error << '\n';
-            return 4;
+    for (auto& runtime : runtimes) {
+        for (int index = 0; index < cli.warmup_frames; ++index) {
+            if (!runtime->pipeline->warmup(error)) {
+                std::cerr << error << '\n';
+                return 4;
+            }
         }
     }
     const double warmup_ms = std::chrono::duration<double, std::milli>(
@@ -349,36 +359,31 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
     }
 
     const auto started = std::chrono::steady_clock::now();
-    std::int64_t total_processed = 0;
-    while (!g_stop_requested.load()) {
-        bool active = false;
-        bool processed = false;
-        for (auto& runtime : runtimes) {
-            if (runtime->finished) {
-                continue;
-            }
-            active = true;
+    std::atomic<std::int64_t> total_processed{0};
+    std::vector<std::thread> processing_threads;
+    processing_threads.reserve(runtimes.size());
+    for (auto& runtime : runtimes) {
+        processing_threads.emplace_back([&cli, runtime = runtime.get(), &total_processed] {
             anpr::Frame frame;
-            if (runtime->pump->waitForFrame(frame, 2)) {
-                runtime->input_width = frame.image.cols;
-                runtime->input_height = frame.image.rows;
-                runtime->pipeline->processFrame(frame);
-                ++total_processed;
-                processed = true;
-                if (cli.max_frames > 0 && total_processed >= cli.max_frames) {
-                    g_stop_requested.store(true);
+            while (!g_stop_requested.load()) {
+                if (runtime->pump->waitForFrame(frame, 20)) {
+                    runtime->input_width = frame.image.cols;
+                    runtime->input_height = frame.image.rows;
+                    runtime->pipeline->processFrame(frame);
+                    const std::int64_t processed = total_processed.fetch_add(1) + 1;
+                    if (cli.max_frames > 0 && processed >= cli.max_frames) {
+                        g_stop_requested.store(true);
+                        break;
+                    }
+                } else if (runtime->pump->finished()) {
                     break;
                 }
-            } else if (runtime->pump->finished()) {
-                runtime->finished = true;
             }
-        }
-        if (!active) {
-            break;
-        }
-        if (!processed) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+            runtime->finished = true;
+        });
+    }
+    for (std::thread& processing_thread : processing_threads) {
+        processing_thread.join();
     }
     const double seconds = std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - started)
@@ -397,6 +402,7 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
     std::cout << std::fixed << std::setprecision(3);
     if (cli.json) {
         std::cout << "{\"mode\":\"multi_stream\",\"streams\":" << runtimes.size()
+                  << ",\"processing_threads\":" << processing_threads.size()
                   << ",\"seconds\":" << seconds << ",\"model_load_ms\":" << model_load_ms
                   << ",\"startup_ms\":" << model_load_ms + warmup_ms
                   << ",\"warmup_ms\":" << warmup_ms << ",\"backend\":\""
@@ -496,6 +502,8 @@ int main(int argc, char** argv) {
             cli.config_path = value;
         } else if (arg == "--backend") {
             cli.backend = value;
+        } else if (arg == "--ocr-backend") {
+            cli.ocr_backend = value;
         } else if (arg == "--max-frames") {
             if (!parseInteger(value, "--max-frames", cli.max_frames)) return 2;
         } else if (arg == "--repeat") {
@@ -540,6 +548,14 @@ int main(int argc, char** argv) {
         config.inference.backend = anpr::inferenceBackendFromString(cli.backend, ok);
         if (!ok) {
             std::cerr << "unknown backend '" << cli.backend << "'\n";
+            return 2;
+        }
+    }
+    if (!cli.ocr_backend.empty()) {
+        config.ocr.backend = cli.ocr_backend;
+        std::string validation_error;
+        if (!anpr::validateConfig(config, validation_error)) {
+            std::cerr << validation_error << '\n';
             return 2;
         }
     }

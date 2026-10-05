@@ -67,6 +67,13 @@ ocr:
   fp16: true
   startup_timeout_ms: 180000
   request_timeout_ms: 10000
+  research_worker_script: tools/research_ocr_worker.py
+  research_model_cache_dir: models/research
+  paddle_python_executable: .venv-paddleocr/bin/python
+  paddle_model: eslav_PP-OCRv5_mobile_rec
+  paddle_engine: onnxruntime
+  easyocr_python_executable: .venv-easyocr/bin/python
+  easyocr_languages: en
   model: models/plate_ocr.onnx
   plate_config: models/plate_ocr_config.yaml
   min_confidence: 0.55

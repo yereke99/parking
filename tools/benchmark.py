@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import datetime as dt
 import json
@@ -21,6 +22,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+OCR_BACKENDS = ("fast_plate_ocr", "nomeroff", "paddleocr", "easyocr")
+RESEARCH_VIDEOS = ("video/car.mp4", "video/parking.mp4", "video/parking2.mp4")
 
 
 def command_output(command: list[str]) -> str | None:
@@ -255,6 +258,8 @@ def accuracy_report(run: dict[str, Any], sources: list[str],
                 if event.get("status") in ("VALID_HIGH_CONFIDENCE", "VALID_LOW_CONFIDENCE")
             ]
             predicted = accepted[0].get("normalized_plate", "") if accepted else ""
+            candidates = [event for event in events if event.get("normalized_plate")]
+            candidate_predicted = candidates[0].get("normalized_plate", "") if candidates else ""
             detected = len(labels) == 1 and int(metrics.get("detections", 0)) > 0
             ocr_attempted = len(labels) == 1 and int(metrics.get("ocr_calls", 0)) > 0
             status = (accepted[0].get("status") if accepted else
@@ -267,6 +272,9 @@ def accuracy_report(run: dict[str, Any], sources: list[str],
                 "camera_id": stream.get("camera_id"), "source": source,
                 "event_id": label["event_id"], "expected": expected,
                 "predicted": predicted, "exact": predicted == expected,
+                "ocr_candidate": candidate_predicted,
+                "ocr_exact": candidate_predicted == expected,
+                "ocr_edit_distance": levenshtein(expected, candidate_predicted),
                 "edit_distance": distance, "status": status,
                 "plate_region": label["plate_region"],
             }
@@ -295,7 +303,9 @@ def accuracy_report(run: dict[str, Any], sources: list[str],
         return {"available": False, "reason": "manifest has no labels for benchmark sources"}
     total_chars = sum(len(case["expected"]) for case in cases)
     total_errors = sum(case["edit_distance"] for case in cases)
+    total_ocr_errors = sum(case["ocr_edit_distance"] for case in cases)
     exact = sum(case["exact"] for case in cases)
+    ocr_exact = sum(case["ocr_exact"] for case in cases)
     failure_modes = {
         "plate_completely_missed": sum(not case["predicted"] and case["status"] == "PLATE_COMPLETELY_MISSED"
                                         for case in cases),
@@ -321,19 +331,26 @@ def accuracy_report(run: dict[str, Any], sources: list[str],
         regional = [case for case in cases if case["plate_region"] == region]
         regional_chars = sum(len(case["expected"]) for case in regional)
         regional_errors = sum(case["edit_distance"] for case in regional)
+        regional_ocr_errors = sum(case["ocr_edit_distance"] for case in regional)
         regional_exact = sum(case["exact"] for case in regional)
+        regional_ocr_exact = sum(case["ocr_exact"] for case in regional)
         by_region[region] = {
             "cases": len(regional),
             "exact_plate_accuracy": regional_exact / len(regional),
+            "ocr_exact_plate_accuracy": regional_ocr_exact / len(regional),
             "character_accuracy": max(0.0, 1.0 - regional_errors / max(1, regional_chars)),
             "cer": regional_errors / max(1, regional_chars),
+            "ocr_cer": regional_ocr_errors / max(1, regional_chars),
         }
     return {
         "available": True,
         "cases": len(cases),
         "exact_plate_accuracy": exact / len(cases),
+        "ocr_exact_plate_accuracy": ocr_exact / len(cases),
         "character_accuracy": max(0.0, 1.0 - total_errors / max(1, total_chars)),
         "cer": total_errors / max(1, total_chars),
+        "ocr_character_accuracy": max(0.0, 1.0 - total_ocr_errors / max(1, total_chars)),
+        "ocr_cer": total_ocr_errors / max(1, total_chars),
         "failures": len(cases) - exact,
         "failure_modes": failure_modes,
         "by_region": by_region,
@@ -341,24 +358,31 @@ def accuracy_report(run: dict[str, Any], sources: list[str],
     }
 
 
-def ocr_environment_metadata() -> dict[str, Any] | None:
-    python = ROOT / ".venv-nomeroff" / "bin" / "python"
-    if not python.is_file():
-        return None
-    script = (
-        "import json,platform,nomeroff_net,torch;"
-        "print(json.dumps({'python':platform.python_version(),"
-        "'nomeroff':getattr(nomeroff_net,'__version__','unknown'),"
-        "'torch':torch.__version__,'cuda':torch.version.cuda,"
-        "'cuda_available':torch.cuda.is_available()}))"
-    )
-    output = command_output([str(python), "-c", script])
-    if not output:
-        return None
-    try:
-        return json.loads(output.splitlines()[-1])
-    except json.JSONDecodeError:
-        return {"error": output}
+def ocr_environment_metadata() -> dict[str, Any]:
+    environments = {
+        "nomeroff": (ROOT / ".venv-nomeroff" / "bin" / "python", "nomeroff_net"),
+        "paddleocr": (ROOT / ".venv-paddleocr" / "bin" / "python", "paddleocr"),
+        "easyocr": (ROOT / ".venv-easyocr" / "bin" / "python", "easyocr"),
+    }
+    result: dict[str, Any] = {}
+    for name, (python, package) in environments.items():
+        if not python.is_file():
+            result[name] = {"available": False, "reason": "environment not installed"}
+            continue
+        script = (
+            "import importlib.metadata,json,platform;"
+            f"print(json.dumps({{'python':platform.python_version(),"
+            f"'version':importlib.metadata.version('{package}')}}))"
+        )
+        output = command_output([str(python), "-c", script])
+        if not output:
+            result[name] = {"available": False, "reason": "metadata probe failed"}
+            continue
+        try:
+            result[name] = {"available": True, **json.loads(output.splitlines()[-1])}
+        except json.JSONDecodeError:
+            result[name] = {"available": False, "reason": output}
+    return result
 
 
 def platform_metadata() -> dict[str, Any]:
@@ -406,6 +430,8 @@ def run_once(args: argparse.Namespace, stream_count: int, run_root: Path,
         command.extend(["--max-frames", str(args.max_frames)])
     if args.backend:
         command.extend(["--backend", args.backend])
+    if args.ocr_backend:
+        command.extend(["--ocr-backend", args.ocr_backend])
     if args.source:
         for source in args.source:
             command.extend(["--source", source])
@@ -428,6 +454,8 @@ def run_once(args: argparse.Namespace, stream_count: int, run_root: Path,
                                           run_root / f"streams_{stream_count}")
     report["command"] = command
     report["stderr"] = stderr
+    report["ocr_backend_requested"] = args.ocr_backend
+    report["video"] = expanded_sources[0] if len(set(expanded_sources)) == 1 else "multiple"
     return report
 
 
@@ -470,14 +498,96 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_research_markdown(path: Path, report: dict[str, Any]) -> None:
+    lines = [
+        "# Four-OCR Video Research",
+        "",
+        f"Timestamp: `{report['metadata']['timestamp']}`",
+        "",
+        "Each 4-stream row used four independent C++ processing threads. Detector and persistent "
+        "worker models are shared where the backend supports it.",
+        "",
+        "| OCR | Video | Threads | Status | FPS/stream | OCR p50 ms | OCR p95 ms | Peak RSS MB | OCR exact | Accepted exact | OCR CER |",
+        "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+
+    def fmt(value: Any) -> str:
+        return "n/a" if value is None else f"{float(value):.2f}"
+
+    for run in report["runs"]:
+        if run.get("status") != "ok":
+            reason = str(run.get("reason", "unavailable")).splitlines()[-1][:100]
+            lines.append(
+                f"| {run['ocr_backend_requested']} | {Path(run['video']).name} | "
+                f"{run['streams']} | unavailable: {reason} | n/a | n/a | n/a | n/a | n/a | n/a | n/a |"
+            )
+            continue
+        aggregate = run["aggregate"]
+        ocr = aggregate["latency"]["ocr"]
+        resources = run["resources"]
+        accuracy = run["accuracy"]
+        exact = accuracy.get("exact_plate_accuracy") if accuracy.get("available") else None
+        ocr_exact = accuracy.get("ocr_exact_plate_accuracy") if accuracy.get("available") else None
+        ocr_cer = accuracy.get("ocr_cer") if accuracy.get("available") else None
+        lines.append(
+            f"| {run['ocr_backend_requested']} | {Path(run['video']).name} | "
+            f"{run.get('processing_threads', run['streams'])} | ok | "
+            f"{aggregate['processed_fps'] / run['streams']:.2f} | {ocr['p50_ms']:.2f} | "
+            f"{ocr['p95_ms']:.2f} | {fmt((resources.get('rss_mb') or {}).get('peak'))} | "
+            f"{fmt(ocr_exact)} | {fmt(exact)} | {fmt(ocr_cer)} |"
+        )
+
+    kz_runs = [
+        run for run in report["runs"]
+        if run.get("status") == "ok" and Path(run["video"]).name == "parking.mp4"
+        and run["streams"] == 1 and run["accuracy"].get("available")
+    ]
+    lines.extend(["", "## Selection rule", ""])
+    if kz_runs:
+        ranked = sorted(
+            kz_runs,
+            key=lambda run: (
+                -run["accuracy"]["ocr_exact_plate_accuracy"],
+                -run["accuracy"]["exact_plate_accuracy"],
+                run["accuracy"]["ocr_cer"],
+                run["aggregate"]["latency"]["ocr"]["p95_ms"],
+            ),
+        )
+        winner = ranked[0]
+        lines.append(
+            f"On this device and the single labelled KZ clip, `{winner['ocr_backend_requested']}` "
+            f"ranks first by OCR exact accuracy, accepted exact accuracy, CER, then OCR p95. "
+            "A correct low-confidence candidate is visible but is not counted as barrier-accepted. "
+            "This is a research result, "
+            "not a production accuracy claim; one plate is not a representative validation set."
+        )
+    else:
+        lines.append(
+            "No backend completed the labelled KZ run, so the harness does not declare a winner."
+        )
+    lines.extend([
+        "",
+        "The unlabelled `parking2.mp4` row is useful for throughput, thermal and missed-frame "
+        "testing only. It must not be used as an accuracy score.",
+    ])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "build" / "kz_anpr_benchmark")
-    parser.add_argument("--config", type=Path, default=ROOT / "config" / "default.yaml")
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--video", default="video/car.mp4")
     parser.add_argument("--source", action="append", default=[])
     parser.add_argument("--streams", type=int, choices=(1, 2, 4), default=1)
     parser.add_argument("--matrix", action="store_true", help="run 1, 2 and 4 streams")
+    parser.add_argument(
+        "--research", action="store_true",
+        help="run all four OCR backends on all three bundled videos with 1 and 4 threads",
+    )
+    parser.add_argument("--ocr-backend", choices=OCR_BACKENDS, default="")
+    parser.add_argument("--research-video", action="append", default=[],
+                        help="override the research video suite; repeat for multiple clips")
     parser.add_argument("--warmup-frames", type=int, default=3)
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--backend", default="")
@@ -488,6 +598,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.config is None:
+        args.config = ROOT / "config" / ("research.yaml" if args.research else "default.yaml")
+    if args.research and args.matrix:
+        print("--research already runs 1 and 4 streams; do not combine it with --matrix",
+              file=sys.stderr)
+        return 2
     if not args.binary.is_file():
         print(f"benchmark binary not found: {args.binary}; build the project first", file=sys.stderr)
         return 2
@@ -495,7 +611,42 @@ def main() -> int:
     timestamp = dt.datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     run_root = args.output_dir / f"run_{timestamp}"
     run_root.mkdir(parents=True, exist_ok=False)
-    truth = load_ground_truth(args.manifest)
+    manifest = args.manifest
+    if args.research and manifest is None:
+        manifest = ROOT / "data" / "manifests" / "video_research.csv"
+    truth = load_ground_truth(manifest)
+    if args.research:
+        runs: list[dict[str, Any]] = []
+        videos = args.research_video or list(RESEARCH_VIDEOS)
+        for ocr_backend in OCR_BACKENDS:
+            for video in videos:
+                for stream_count in (1, 4):
+                    case_args = copy.copy(args)
+                    case_args.ocr_backend = ocr_backend
+                    case_args.video = video
+                    case_args.source = []
+                    case_root = run_root / ocr_backend / Path(video).stem
+                    try:
+                        run = run_once(case_args, stream_count, case_root, truth)
+                        run["status"] = "ok"
+                    except (RuntimeError, ValueError) as exc:
+                        run = {
+                            "status": "unavailable",
+                            "reason": str(exc),
+                            "ocr_backend_requested": ocr_backend,
+                            "video": video,
+                            "streams": stream_count,
+                        }
+                    runs.append(run)
+        report = {"mode": "four_ocr_research", "metadata": platform_metadata(), "runs": runs}
+        json_path = args.output_dir / f"research_{timestamp}.json"
+        markdown_path = args.output_dir / f"research_{timestamp}.md"
+        json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        write_research_markdown(markdown_path, report)
+        print(markdown_path.read_text(encoding="utf-8"))
+        print(f"json={json_path}")
+        print(f"markdown={markdown_path}")
+        return 0
     try:
         runs = [run_once(args, count, run_root, truth) for count in stream_counts]
     except (RuntimeError, ValueError) as exc:

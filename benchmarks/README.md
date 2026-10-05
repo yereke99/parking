@@ -11,6 +11,22 @@ python3 tools/benchmark.py --streams 4
 python3 tools/benchmark.py --matrix
 ```
 
+For the four-OCR research suite over all three bundled videos:
+
+```sh
+python3 tools/benchmark.py --research
+```
+
+That command runs `fast_plate_ocr`, `nomeroff`, `paddleocr`, and `easyocr` with one and four
+independent C++ processing threads. A four-thread run repeats the selected clip as four cameras;
+the detector is shared and serialized, and persistent Python workers are shared so their model
+weights are not duplicated. Each result records the requested OCR, actual loaded backend/model,
+startup time, per-stage latency, per-stream FPS, dropped frames, CPU, process-tree RSS, GPU load,
+GPU memory, temperature, power, recognition events and labelled accuracy when available.
+
+The generated Markdown never silently drops an unavailable backend. Missing environments or an
+unsupported Jetson package appear as `unavailable` rows in both Markdown and JSON.
+
 It writes timestamped JSON and Markdown under `benchmark_results/`, samples the full process tree
 (including the shared Nomeroff worker), and records GPU/Jetson telemetry when those tools exist.
 The harness defaults to `config/default.yaml`, including the production KZ validation profile.

@@ -71,6 +71,7 @@ if(KZ_ANPR_BUILD_RUNTIME)
             src/ocr/fast_plate_ocr.cpp
             src/ocr/nomeroff_ocr.cpp
             src/ocr/plate_ocr.cpp
+            src/ocr/research_ocr.cpp
             src/pipeline/anpr_pipeline.cpp
             src/pipeline/motion_detector.cpp
             src/pipeline/quality_assessor.cpp
