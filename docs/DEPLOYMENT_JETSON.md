@@ -25,6 +25,17 @@ checks imports, array cropping, and offline EasyOCR model loading/inference on C
 checks GPU access. Python 3.9.25 controls the benchmark; GPU OCR stays in a separate Python 3.6
 process so NVIDIA's JetPack wheel remains usable.
 
+pip never downloads anything during the image build; its 15-second read timeout failed on the
+Nano's connection. `tools/docker/fetch-wheels.sh` fetches every wheel listed in
+`requirements/jetson-nano-wheels.txt` and `requirements/jetson-nano-build-wheels.txt` with
+retries and SHA-256 checks, and pip installs them with `--no-index`. After changing a lock file,
+regenerate its list:
+
+```sh
+tools/docker/wheel_manifest.py requirements/jetson-nano.lock > requirements/jetson-nano-wheels.txt
+tools/docker/wheel_manifest.py requirements/jetson-nano-build.lock > requirements/jetson-nano-build-wheels.txt
+```
+
 CUDA, cuDNN and TensorRT are not installed in the image. On JetPack 4 the NVIDIA container runtime
 mounts the host's copies read-only into every container (libraries, headers and `nvcc`, as listed
 in `/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`), and into every

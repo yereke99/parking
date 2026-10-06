@@ -55,8 +55,15 @@ RUN fetch-verified \
     && tar -xzf /tmp/onnxruntime.tgz -C /opt/onnxruntime --strip-components=1 \
     && rm /tmp/onnxruntime.tgz
 
+# Only the C++ build and test inputs: edits to Python tools, requirements or this Dockerfile must
+# not invalidate the single-job C++ build.
 WORKDIR /src
-COPY . /src
+COPY CMakeLists.txt /src/
+COPY include /src/include
+COPY src /src/src
+COPY tests /src/tests
+COPY config /src/config
+COPY models/plate_ocr_config.yaml /src/models/plate_ocr_config.yaml
 RUN mkdir -p /tmp/build \
     && cd /tmp/build \
     && cmake /src \
@@ -83,9 +90,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
+COPY tools/docker/fetch-wheels.sh /usr/local/bin/fetch-wheels
 COPY requirements/jetson-nano-build.lock /tmp/jetson-nano-build.lock
-RUN /usr/bin/python3 -m pip install --no-cache-dir --no-deps --require-hashes \
-        --only-binary=:all: --ignore-installed -r /tmp/jetson-nano-build.lock \
+COPY requirements/jetson-nano-build-wheels.txt /tmp/jetson-nano-build-wheels.txt
+# Build tools come from the retrying wheelhouse too; pip only installs local files.
+RUN fetch-wheels /tmp/jetson-nano-build-wheels.txt /tmp/wheelhouse \
+    && /usr/bin/python3 -m pip install --no-cache-dir --no-index --find-links /tmp/wheelhouse \
+        --no-deps --require-hashes --only-binary=:all: --ignore-installed \
+        -r /tmp/jetson-nano-build.lock \
+    && rm -rf /tmp/wheelhouse \
     && /usr/bin/python3 -c 'import numpy; assert numpy.__version__ == "1.19.5"' \
     && fetch-verified \
         https://files.pythonhosted.org/packages/source/s/scikit-image/scikit-image-0.17.2.tar.gz \
@@ -113,21 +126,30 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
+
+# pip's own downloader (15 s read timeout, no retry inside a transfer) fails on the Nano's
+# connection. Download pip and every pinned wheel with fetch-verified's retries and SHA-256
+# check first; everything below installs offline. Regenerate the manifest when the lock changes:
+#   tools/docker/wheel_manifest.py requirements/jetson-nano.lock > requirements/jetson-nano-wheels.txt
+COPY tools/docker/fetch-wheels.sh /usr/local/bin/fetch-wheels
+COPY requirements/jetson-nano-wheels.txt /tmp/jetson-nano-wheels.txt
+RUN mkdir -p /tmp/wheelhouse \
+    && fetch-verified \
+        https://files.pythonhosted.org/packages/a4/6d/6463d49a933f547439d6b5b98b46af8742cc03ae83543e4d7688c2420f8b/pip-21.3.1-py3-none-any.whl \
+        "${PIP_SHA256}" /tmp/wheelhouse/pip-21.3.1-py3-none-any.whl \
+    && fetch-wheels /tmp/jetson-nano-wheels.txt /tmp/wheelhouse
+
 COPY requirements/jetson-nano.lock /tmp/jetson-nano.lock
 COPY --from=ocr-builder /opt/ocr-wheels/ /tmp/ocr-wheels/
 # The base image's Debian python3-yaml (pulled in by llvm-9-dev) is a distutils install that
 # upstream pip cannot uninstall. Install the pinned set alongside the Debian copies instead:
 # /usr/local/lib/python3.6/dist-packages precedes /usr/lib/python3/dist-packages on sys.path.
-RUN python3 -m pip download --no-deps --index-url https://pypi.org/simple --dest /tmp pip==21.3.1 \
-    && echo "${PIP_SHA256}  /tmp/pip-21.3.1-py3-none-any.whl" | sha256sum -c - \
-    && python3 -m pip install --no-index /tmp/pip-21.3.1-py3-none-any.whl \
-    && rm /tmp/pip-21.3.1-py3-none-any.whl \
-    && python3 -m pip install --no-cache-dir --no-deps --require-hashes --ignore-installed \
-        -r /tmp/jetson-nano.lock \
+RUN python3 -m pip install --no-index /tmp/wheelhouse/pip-21.3.1-py3-none-any.whl \
+    && python3 -m pip install --no-cache-dir --no-index --find-links /tmp/wheelhouse \
+        --no-deps --require-hashes --ignore-installed -r /tmp/jetson-nano.lock \
     && python3 -m pip install --no-cache-dir --no-deps --no-index --ignore-installed \
         /tmp/ocr-wheels/scikit_image-0.17.2-*.whl \
-    && rm /tmp/jetson-nano.lock \
-    && rm -rf /tmp/ocr-wheels \
+    && rm -rf /tmp/wheelhouse /tmp/ocr-wheels /tmp/jetson-nano.lock /tmp/jetson-nano-wheels.txt \
     && python3 -c 'import easyocr, numpy, scipy, skimage; from skimage import io; from skimage.util import crop; assert easyocr.__version__ == "1.6.2"; assert skimage.__version__ == "0.17.2"; assert numpy.__version__ == "1.19.5"; assert scipy.__version__ == "1.5.4"; assert crop(numpy.zeros((4, 4)), 1).shape == (2, 2)'
 
 # Recognition-only EasyOCR needs only the 14 MB English recognizer, not the large CRAFT detector.
