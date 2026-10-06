@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
-#include <charconv>
 #include <cstddef>
+#include <exception>
 #include <fstream>
 #include <sstream>
 
@@ -443,14 +443,25 @@ std::optional<long long> asInt(const Node* node) {
     if (!text || text->empty()) {
         return std::nullopt;
     }
-    long long value = 0;
-    const char* begin = text->data();
-    const char* end = begin + text->size();
-    const auto [ptr, ec] = std::from_chars(begin, end, value);
-    if (ec != std::errc() || ptr != end) {
+    std::size_t digit = text->front() == '-' ? 1 : 0;
+    if (digit == text->size()) {
         return std::nullopt;
     }
-    return value;
+    for (; digit < text->size(); ++digit) {
+        if (std::isdigit(static_cast<unsigned char>((*text)[digit])) == 0) {
+            return std::nullopt;
+        }
+    }
+    try {
+        std::size_t consumed = 0;
+        const long long value = std::stoll(*text, &consumed, 10);
+        if (consumed != text->size()) {
+            return std::nullopt;
+        }
+        return value;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
 }
 
 std::optional<bool> asBool(const Node* node) {
