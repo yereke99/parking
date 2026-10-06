@@ -17,6 +17,16 @@ For the four-OCR research suite over all three bundled videos:
 python3 tools/benchmark.py --research
 ```
 
+On Jetson Nano 4 GB / JetPack 4.6.1 use the pinned container instead:
+
+```sh
+make jetson-all  # build + GPU preflight + 1/4-stream research + final table
+make run         # full project: TensorRT detector + CUDA EasyOCR
+```
+
+The generated research table includes OCR average/p95 latency, peak RSS, dropped frames,
+timeouts, accuracy failures and explicit unavailable rows for incompatible backends.
+
 That command runs `fast_plate_ocr`, `nomeroff`, `paddleocr`, and `easyocr` with one and four
 independent C++ processing threads. A four-thread run repeats the selected clip as four cameras;
 the detector is shared and serialized, and persistent Python workers are shared so their model

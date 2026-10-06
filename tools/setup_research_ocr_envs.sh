@@ -20,6 +20,16 @@ jetson=0
 if [[ -f /etc/nv_tegra_release ]]; then
     jetson=1
 fi
+if [[ "$jetson" == "1" && "$selection" != "--easyocr" ]]; then
+    "$python_command" - <<'PY'
+import sys
+if sys.version_info < (3, 8):
+    raise SystemExit(
+        "The current PaddleOCR 3.x setup is incompatible with Python 3.6 on JetPack 4. "
+        "Use Dockerfile.jetson-nano for the pinned Nano research environment."
+    )
+PY
+fi
 
 setup_easyocr() {
     if [[ "$jetson" == "1" ]]; then

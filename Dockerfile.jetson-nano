@@ -1,0 +1,118 @@
+# Jetson Nano 4 GB / JetPack 4.6.1 / L4T R32.7.1 only.
+# Build this image on the Jetson. The digest prevents a future tag change from silently replacing
+# CUDA 10.2, PyTorch 1.10, OpenCV 4.5 or the JetPack Python 3.6 ABI.
+ARG L4T_ML_IMAGE=nvcr.io/nvidia/l4t-ml:r32.7.1-py3@sha256:238be76a09a10904b6b9d3cfca5cd2b34c369a3c3c99340050f825998f552a5b
+
+FROM ${L4T_ML_IMAGE} AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG ONNXRUNTIME_VERSION=1.11.1
+ARG ONNXRUNTIME_SHA256=bb9ca658a6a0acc7b9e4288647277a9ce9d86b063a2403a51d5c0d2e4df43603
+ARG PYTHON_VERSION=3.9.25
+ARG PYTHON_SHA256=00e07d7c0f2f0cc002432d1ee84d2a40dae404a99303e3f97701c10966c91834
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        build-essential ca-certificates cmake curl pkg-config \
+        cuda-cudart-dev-10-2=10.2.300-1 \
+        libnvinfer-dev=8.2.1-1+cuda10.2 \
+        libnvonnxparsers-dev=8.2.1-1+cuda10.2 \
+        libbz2-dev libffi-dev liblzma-dev libreadline-dev libsqlite3-dev libssl-dev \
+        uuid-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 18.04 in JetPack 4 has no supported Python 3.9 package. Build the final 3.9 security
+# release once in the image builder (single job, no PGO/LTO) and copy only its installed runtime.
+# NVIDIA PyTorch remains isolated on /usr/bin/python3 (3.6) because its wheel is ABI-specific.
+RUN curl -L --fail --retry 3 \
+        "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
+        -o /tmp/python.tar.xz \
+    && echo "${PYTHON_SHA256}  /tmp/python.tar.xz" | sha256sum -c - \
+    && mkdir -p /tmp/python-src \
+    && tar -xJf /tmp/python.tar.xz -C /tmp/python-src --strip-components=1 \
+    && cd /tmp/python-src \
+    && ./configure --prefix=/opt/python3.9 --with-ensurepip=install \
+    && make -j1 \
+    && make altinstall \
+    && ln -s python3.9 /opt/python3.9/bin/python3 \
+    && ln -s python3.9 /opt/python3.9/bin/python \
+    && /opt/python3.9/bin/python3.9 --version \
+    && rm /tmp/python.tar.xz
+
+# Microsoft publishes an aarch64 CPU C/C++ package for ORT 1.11.1. It is used only by the legacy
+# uint8 Fast Plate OCR model. The detector is compiled against the native TensorRT 8.2 and CUDA
+# libraries already pinned by the L4T image, avoiding a large device-local ONNX Runtime build.
+RUN curl -L --fail --retry 3 \
+        "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-aarch64-${ONNXRUNTIME_VERSION}.tgz" \
+        -o /tmp/onnxruntime.tgz \
+    && echo "${ONNXRUNTIME_SHA256}  /tmp/onnxruntime.tgz" | sha256sum -c - \
+    && mkdir -p /opt/onnxruntime \
+    && tar -xzf /tmp/onnxruntime.tgz -C /opt/onnxruntime --strip-components=1 \
+    && rm /tmp/onnxruntime.tgz
+
+WORKDIR /src
+COPY . /src
+RUN mkdir -p /tmp/build \
+    && cd /tmp/build \
+    && cmake /src \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+        -DKZ_ANPR_WITH_TENSORRT=ON \
+        -DKZ_ANPR_REQUIRE_TENSORRT=ON \
+        -DKZ_ANPR_BUILD_TESTS=ON \
+    && cmake --build . -- -j1 \
+    && ctest --output-on-failure
+
+FROM ${L4T_ML_IMAGE} AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG EASYOCR_MODEL_SHA256=1b5eaebf1c062de6205560c97ffcfa8dc0e6f413c340e8adc5cfc57e159f61ff
+ARG PIP_SHA256=deaf32dcd9ab821e359cd8330786bcd077604b5c5730c0b096eda46f95c24a2d
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        ca-certificates curl libbz2-1.0 libffi6 libgomp1 liblzma5 libreadline7 libsqlite3-0 \
+        cuda-cudart-10-2=10.2.300-1 \
+        libnvinfer8=8.2.1-1+cuda10.2 \
+        libnvonnxparsers8=8.2.1-1+cuda10.2 \
+        libssl1.1 libuuid1 procps python3-pip unzip zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/jetson-nano.lock /tmp/jetson-nano.lock
+RUN python3 -m pip download --no-deps --dest /tmp pip==21.3.1 \
+    && echo "${PIP_SHA256}  /tmp/pip-21.3.1-py3-none-any.whl" | sha256sum -c - \
+    && python3 -m pip install --no-index /tmp/pip-21.3.1-py3-none-any.whl \
+    && rm /tmp/pip-21.3.1-py3-none-any.whl \
+    && python3 -m pip install --no-cache-dir --no-deps --require-hashes \
+        -r /tmp/jetson-nano.lock \
+    && rm /tmp/jetson-nano.lock
+
+# Recognition-only EasyOCR needs only the 14 MB English recognizer, not the large CRAFT detector.
+# The hash is checked at image build and runtime downloads remain disabled.
+RUN mkdir -p /opt/kz-anpr/models/research/easyocr \
+    && curl -L --fail --retry 3 \
+        https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.zip \
+        -o /tmp/english_g2.zip \
+    && echo "${EASYOCR_MODEL_SHA256}  /tmp/english_g2.zip" | sha256sum -c - \
+    && unzip -q /tmp/english_g2.zip -d /opt/kz-anpr/models/research/easyocr \
+    && rm /tmp/english_g2.zip
+
+COPY --from=builder /opt/onnxruntime/lib/ /opt/onnxruntime/lib/
+COPY --from=builder /opt/python3.9/ /opt/python3.9/
+COPY --from=builder /tmp/build/kz_anpr /opt/kz-anpr/bin/kz_anpr
+COPY --from=builder /tmp/build/kz_anpr_benchmark /opt/kz-anpr/bin/kz_anpr_benchmark
+COPY tools/jetson_preflight.py tools/benchmark.py tools/nomeroff_worker.py \
+     tools/research_ocr_worker.py /opt/kz-anpr/tools/
+
+ENV LD_LIBRARY_PATH=/opt/onnxruntime/lib:${LD_LIBRARY_PATH} \
+    PATH=/opt/python3.9/bin:${PATH} \
+    KZ_ANPR_EASYOCR_PYTHON=/usr/bin/python3 \
+    KZ_ANPR_NOMEROFF_PYTHON=/usr/bin/python3 \
+    KZ_ANPR_PADDLEOCR_PYTHON=/usr/bin/python3 \
+    PYTHONUNBUFFERED=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
+
+WORKDIR /workspace
+CMD ["/opt/python3.9/bin/python3.9", "/opt/kz-anpr/tools/jetson_preflight.py"]

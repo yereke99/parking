@@ -5,8 +5,8 @@
 The benchmark answers two separate questions:
 
 1. Which recognizer reads the Kazakhstan plate correctly?
-2. Which correct recognizer still meets latency, memory and thermal limits with four cameras on
-   a 4 GB Jetson Orin Nano?
+2. Which compatible recognizer still meets latency, memory and thermal limits with four cameras
+   on the original 4 GB Jetson Nano?
 
 Speed does not compensate for a wrong plate. Backends are ranked by exact KZ plate accuracy,
 then character error rate (CER), then four-camera OCR p95 latency and peak memory.
@@ -30,21 +30,21 @@ separate startup field keeps that operational cost visible.
 
 ## Reproducible Jetson run
 
-Use the same JetPack image, power mode, clocks and cooling for every row:
+Use the pinned container, power mode, clocks and cooling for every row:
 
 ```sh
 sudo nvpmodel -m 0
 sudo jetson_clocks
 
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure
-
-tools/setup_nomeroff_env.sh --jetson
-tools/setup_research_ocr_envs.sh --all
-
-python3 tools/benchmark.py --research
+make jetson-all
 ```
+
+This one command builds, validates real TensorRT GPU inference, runs the full matrix, prints the
+comparison table, and writes timestamped Markdown and JSON results under `benchmark_results/`.
+
+All research rows use the same shared native TensorRT FP16 detector. EasyOCR then performs OCR on
+CUDA; the legacy Fast Plate OCR recognizer uses the documented CPU ORT fallback. To launch the
+full project rather than the benchmark, run `make run` (or pass a camera with `RUN_ARGS`).
 
 No model is loaded once per OCR call. Four-camera runs create four C++ processing threads and
 four real-time frame pumps. They share one detector. Nomeroff, PaddleOCR and EasyOCR share one
@@ -54,12 +54,11 @@ This represents a memory-bounded edge deployment rather than four unrelated proc
 To test one candidate directly:
 
 ```sh
-python3 tools/benchmark.py \
-  --config config/research.yaml \
+tools/jetson_docker.sh benchmark \
   --video video/parking.mp4 \
-  --ocr-backend nomeroff \
+  --ocr-backend easyocr \
   --streams 4 \
-  --manifest data/manifests/video_research.csv
+  --max-frames 300
 ```
 
 ## Bundled videos and labels
@@ -79,7 +78,7 @@ representative labelled manifest before making an accuracy claim.
 Every run is preserved in JSON. The Markdown summary includes:
 
 - processing threads and per-stream FPS;
-- OCR p50/p95 and complete stage latency;
+- OCR average/p95 and complete stage latency;
 - startup/model-load time;
 - captured, processed and dropped frames;
 - process-tree CPU and peak RSS;
@@ -99,8 +98,8 @@ on the target device.
 
 ## Expected deployment outcome
 
-Fast Plate OCR is expected to win raw speed and footprint. Nomeroff is expected to win KZ exact
-accuracy and is therefore the production default. PaddleOCR is useful as a general-recognition
-control but its arm64 packaging is less reliable. EasyOCR is expected to be both heavier and less
-accurate on tight plate crops. The harness intentionally measures all four so these expectations
-can be accepted or rejected on the actual Orin Nano instead of being treated as benchmark data.
+On JetPack 4, Fast Plate OCR and EasyOCR are the runnable candidates in the pinned image.
+Nomeroff 4.0.1 and PaddleOCR 3.7 remain named rows but are reported unavailable because their
+upstream runtime requirements cannot be satisfied honestly on the supported Nano stack. The
+harness intentionally keeps all four rows so a future verified package can be compared without
+changing the research schema.

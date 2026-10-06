@@ -168,7 +168,13 @@ private:
         const std::array<const char*, 2> values{device_id.c_str(), "kSameAsRequested"};
         Ort::ThrowOnError(
             Ort::GetApi().UpdateCUDAProviderOptions(cuda, keys.data(), values.data(), keys.size()));
+#if ORT_API_VERSION >= 12
         options.AppendExecutionProvider_CUDA_V2(*cuda);
+#else
+        // ORT 1.11 exposes the V2 CUDA provider in the C API but not yet in its C++ wrapper.
+        Ort::ThrowOnError(
+            Ort::GetApi().SessionOptionsAppendExecutionProvider_CUDA_V2(options, cuda));
+#endif
     }
 
     void describeTensors() {
@@ -178,8 +184,14 @@ private:
         inputs_.reserve(input_count);
         input_name_storage_.reserve(input_count);
         for (std::size_t i = 0; i < input_count; ++i) {
+#if ORT_API_VERSION >= 12
             const Ort::AllocatedStringPtr name = session_->GetInputNameAllocated(i, allocator);
             input_name_storage_.emplace_back(name.get());
+#else
+            char* name = session_->GetInputName(i, allocator);
+            input_name_storage_.emplace_back(name);
+            allocator.Free(name);
+#endif
 
             const Ort::TypeInfo info = session_->GetInputTypeInfo(i);
             const auto tensor_info = info.GetTensorTypeAndShapeInfo();
@@ -200,8 +212,14 @@ private:
         outputs_.reserve(output_count);
         output_name_storage_.reserve(output_count);
         for (std::size_t i = 0; i < output_count; ++i) {
+#if ORT_API_VERSION >= 12
             const Ort::AllocatedStringPtr name = session_->GetOutputNameAllocated(i, allocator);
             output_name_storage_.emplace_back(name.get());
+#else
+            char* name = session_->GetOutputName(i, allocator);
+            output_name_storage_.emplace_back(name);
+            allocator.Free(name);
+#endif
 
             const Ort::TypeInfo info = session_->GetOutputTypeInfo(i);
             const auto tensor_info = info.GetTensorTypeAndShapeInfo();

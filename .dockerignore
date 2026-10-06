@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv-*
+build*
+benchmark_results
+video
+license_plate_detector.pt
+models/*.onnx
+models/nomeroff
+models/research
+models/trt_cache
+__pycache__
+*.pyc
+*.pyo
+.DS_Store

@@ -1,5 +1,6 @@
 #include "anpr/inference/inference_session.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <numeric>
 
@@ -8,6 +9,9 @@
 
 #ifdef KZ_ANPR_WITH_ONNXRUNTIME
 #include "anpr/inference/onnxruntime_session.hpp"
+#endif
+#ifdef KZ_ANPR_WITH_TENSORRT
+#include "anpr/inference/tensorrt_session.hpp"
 #endif
 
 namespace anpr {
@@ -23,8 +27,13 @@ std::vector<InferenceBackend> backendOrder(InferenceBackend requested, bool requ
                      InferenceBackend::kOnnxCpu, InferenceBackend::kOpenCvDnn};
             break;
         case InferenceBackend::kTensorRT:
-            order = {InferenceBackend::kTensorRT, InferenceBackend::kOnnxCuda,
-                     InferenceBackend::kOnnxCpu};
+            // TensorRT 8.2 does not accept the legacy OCR model's uint8 input. This is a known,
+            // explicit per-model CPU fallback; the detector remains strict native TensorRT.
+            order = requires_uint8
+                        ? std::vector<InferenceBackend>{InferenceBackend::kOnnxCpu}
+                        : std::vector<InferenceBackend>{InferenceBackend::kTensorRT,
+                                                        InferenceBackend::kOnnxCuda,
+                                                        InferenceBackend::kOnnxCpu};
             break;
         case InferenceBackend::kOnnxCuda:
             order = {InferenceBackend::kOnnxCuda, InferenceBackend::kOnnxCpu};
@@ -96,6 +105,12 @@ std::unique_ptr<IInferenceSession> createInferenceSession(const SessionRequest& 
 
         if (backend == InferenceBackend::kOpenCvDnn) {
             session = createOpenCvDnnSession(request, attempt_error);
+        } else if (backend == InferenceBackend::kTensorRT) {
+#ifdef KZ_ANPR_WITH_TENSORRT
+            session = createTensorRTSession(request, attempt_error);
+#else
+            attempt_error = "this build does not link native TensorRT";
+#endif
         } else {
 #ifdef KZ_ANPR_WITH_ONNXRUNTIME
             session = createOnnxRuntimeSession(request, backend, attempt_error);
@@ -141,6 +156,12 @@ bool onnxRuntimeAvailable() {
 
 std::vector<std::string> availableProviders() {
     return {};
+}
+#endif
+
+#ifndef KZ_ANPR_WITH_TENSORRT
+bool tensorRTAvailable() {
+    return false;
 }
 #endif
 

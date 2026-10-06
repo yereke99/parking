@@ -6,8 +6,6 @@ this avoids JPEG encode/decode latency and quality loss. All diagnostics go to s
 reserved for protocol responses.
 """
 
-from __future__ import annotations
-
 import argparse
 import contextlib
 import json
@@ -19,7 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -48,7 +46,7 @@ def _rss_mb() -> float:
     return value / (1024.0 * 1024.0) if sys.platform == "darwin" else value / 1024.0
 
 
-def ctc_character_confidences(logits: Any) -> list[list[float]]:
+def ctc_character_confidences(logits: Any) -> List[List[float]]:
     """Return confidence for each emitted CTC character, excluding blank/repeats."""
     import torch
 
@@ -56,10 +54,10 @@ def ctc_character_confidences(logits: Any) -> list[list[float]]:
         raise ValueError(f"expected CTC logits [time,batch,classes], got {tuple(logits.shape)}")
     probabilities = torch.softmax(logits.float(), dim=2)
     best_probability, best_token = probabilities.max(dim=2)
-    result: list[list[float]] = []
+    result: List[List[float]] = []
     for batch_index in range(best_token.shape[1]):
         previous = -1
-        confidences: list[float] = []
+        confidences: List[float] = []
         for token, probability in zip(
             best_token[:, batch_index].detach().cpu().tolist(),
             best_probability[:, batch_index].detach().cpu().tolist(),
@@ -88,7 +86,7 @@ class MockRecognizer:
     def __init__(self, region: str) -> None:
         self.region = region
 
-    def recognize_batch(self, crops: Iterable[np.ndarray]) -> list[Recognition]:
+    def recognize_batch(self, crops: Iterable[np.ndarray]) -> List[Recognition]:
         results = []
         for crop in crops:
             if crop.size == 0:
@@ -181,7 +179,7 @@ class NomeroffRecognizer:
             return "mps"
         return "cpu"
 
-    def recognize_batch(self, crops: Iterable[np.ndarray]) -> list[Recognition]:
+    def recognize_batch(self, crops: Iterable[np.ndarray]) -> List[Recognition]:
         crops = list(crops)
         if not crops:
             return []
@@ -192,7 +190,7 @@ class NomeroffRecognizer:
         labels = [self.region] * len(crops)
         lines = [self.lines] * len(crops)
         predicted = self.detector.define_order_detector(crops, labels, lines)
-        confidence_by_order: dict[int, list[float]] = {}
+        confidence_by_order: Dict[int, List[float]] = {}
 
         with self.torch.inference_mode():
             for key, group in predicted.items():
@@ -221,9 +219,9 @@ class NomeroffRecognizer:
         return results
 
 
-def _build_recognizer(args: argparse.Namespace) -> tuple[Any, float, str | None]:
+def _build_recognizer(args: argparse.Namespace) -> Tuple[Any, float, Optional[str]]:
     started = time.perf_counter()
-    fallback: str | None = None
+    fallback = None  # type: Optional[str]
     if args.mock or os.environ.get("NOMEROFF_MOCK") == "1":
         recognizer: Any = MockRecognizer(args.region)
     else:
@@ -251,7 +249,8 @@ def _build_recognizer(args: argparse.Namespace) -> tuple[Any, float, str | None]
     return recognizer, (time.perf_counter() - started) * 1000.0, fallback
 
 
-def _metadata(recognizer: Any, startup_ms: float, fallback: str | None) -> dict[str, Any]:
+def _metadata(recognizer: Any, startup_ms: float,
+              fallback: Optional[str]) -> Dict[str, Any]:
     torch_version = "not-loaded"
     cuda_version = None
     cuda_memory_mb = 0.0
@@ -280,7 +279,7 @@ def _metadata(recognizer: Any, startup_ms: float, fallback: str | None) -> dict[
     }
 
 
-def _serve(recognizer: Any, startup_ms: float, fallback: str | None) -> int:
+def _serve(recognizer: Any, startup_ms: float, fallback: Optional[str]) -> int:
     meta = _metadata(recognizer, startup_ms, fallback)
     ready = [
         "READY", meta["nomeroff_version"], meta["nomeroff_commit"], meta["device"],
@@ -348,7 +347,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--region", choices=("kz", "ru", "by", "kg", "su"), default="kz")
     parser.add_argument("--lines", choices=(1, 2), type=int, default=1)
     parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), default="auto")
-    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
+    precision = parser.add_mutually_exclusive_group()
+    precision.add_argument("--fp16", dest="fp16", action="store_true")
+    precision.add_argument("--no-fp16", dest="fp16", action="store_false")
+    parser.set_defaults(fp16=True)
     parser.add_argument("--model-cache", default="models/nomeroff")
     return parser.parse_args()
 

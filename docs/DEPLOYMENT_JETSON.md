@@ -1,271 +1,149 @@
-# Jetson Orin Nano Deployment
+# Jetson Nano 4 GB Docker deployment
 
-The first benchmark target is an Orin Nano 4 GB; the later production target is an Orin Nano or
-Orin Nano Super 8 GB. Everything below assumes JetPack 6 with CUDA and TensorRT installed from
-the NVIDIA repositories. Validate the exact JetPack/PyTorch combination on both memory sizes.
+This path targets the original NVIDIA Jetson Nano Developer Kit, not Orin:
 
-The detector continues to use ONNX Runtime/TensorRT. OCR uses pinned Nomeroff/PyTorch and is
-installed separately; do not interpret the detector TensorRT setup as OCR acceleration.
-
-For a CPU-only ARM board, see [Wiren Board 8 deployment](DEPLOYMENT_WB8.md); the application is
-the same binary with `inference.backend: onnx_cpu`.
-
-## 1. Base packages
-
-```sh
-sudo apt update
-sudo apt install -y build-essential cmake pkg-config \
-    libopencv-dev v4l-utils \
-    gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-    gstreamer1.0-libav
-```
-
-Confirm CUDA and TensorRT came with JetPack:
-
-```sh
-dpkg -l | grep -E 'nvidia-tensorrt|cuda-toolkit'
-python3 -c "import tensorrt; print(tensorrt.__version__)"
-```
-
-## 2. ONNX Runtime with the TensorRT provider
-
-The stock `onnxruntime` package has no TensorRT provider. Use NVIDIA's Jetson build, matched to
-your JetPack version, from the Jetson Zoo. It must be the C and C++ package, not just the Python
-wheel:
-
-```sh
-# Adjust the version to your JetPack release.
-wget https://nvidia.box.com/shared/static/<onnxruntime-linux-aarch64-gpu>.tgz
-tar xzf onnxruntime-linux-aarch64-gpu-*.tgz
-sudo cp -r onnxruntime-linux-aarch64-gpu-*/include /usr/local/include/onnxruntime
-sudo cp -r onnxruntime-linux-aarch64-gpu-*/lib/* /usr/local/lib/
-sudo ldconfig
-```
-
-CMake finds it automatically. If it is installed somewhere unusual, point at it:
-
-```sh
-cmake -S . -B build -DONNXRUNTIME_ROOT=/opt/onnxruntime
-```
-
-Verify the provider is present before going further:
-
-```sh
-./build/kz_anpr --print-backends
-```
-
-`TensorrtExecutionProvider` must appear. If it does not, the ONNX Runtime build is wrong and the
-application will silently fall back to CPU.
-
-## 3. Build
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure
-```
-
-Install the isolated OCR environment without replacing NVIDIA PyTorch:
-
-```sh
-# Install NVIDIA's PyTorch/torchvision wheels matching this exact JetPack first.
-sudo apt install -y python3-opencv
-tools/setup_nomeroff_env.sh --jetson
-```
-
-For the optional four-OCR research comparison, install the two additional isolated workers:
-
-```sh
-tools/setup_research_ocr_envs.sh --all
-```
-
-EasyOCR reuses NVIDIA's JetPack-matched PyTorch. The setup verifies that its version was not
-shadowed. PaddleOCR is configured with its ONNX Runtime inference engine because PaddlePaddle's
-official installer does not support arm64. It therefore requires a Python ONNX Runtime build
-matched to the JetPack release; if that dependency is unavailable, the matrix records PaddleOCR
-as unavailable instead of falling back to an unmeasured or incompatible runtime.
-
-## 4. Models
-
-The detector file and pre-populated Nomeroff cache must be on the device. Normal runtime should
-not download anything.
-
-```text
-models/license_plate_detector.onnx
-models/nomeroff/
-```
-
-See [model evaluation](MODEL_EVALUATION.md) for how each was produced.
-
-## 5. Build the detector TensorRT engine once
-
-The TensorRT provider compiles an engine the first time a model runs. That takes minutes and must
-not happen while a vehicle waits at the barrier.
-
-```sh
-tools/build_trt_engines.sh config/default.yaml ./build/kz_anpr
-```
-
-Then confirm the second run loads instead of builds:
-
-```sh
-time ./build/kz_anpr --config config/default.yaml --backend tensorrt --warmup
-```
-
-The engine cache is tied to the exact model, TensorRT version, JetPack version and GPU. Rebuild
-it after changing any of them. Cache files are generated artifacts and are not committed.
-
-## 6. Pin the performance mode
-
-Jetson clocks default to a power-saving profile. For a barrier that must respond quickly:
-
-```sh
-sudo nvpmodel -m 0     # MAXN
-sudo jetson_clocks     # pin clocks to maximum
-```
-
-`nvpmodel` persists across reboots; `jetson_clocks` does not, so run it from a boot unit if you
-depend on it. Check thermals under sustained load before committing to MAXN in an enclosure:
-
-```sh
-sudo tegrastats
-```
-
-## 7. Camera
-
-RTSP through the config file:
-
-```yaml
-camera:
-  source: "rtsp://user:password@192.168.1.64:554/Streaming/Channels/101"
-  kind: rtsp
-  rtsp_tcp: true
-```
-
-For a hardware-decoded GStreamer pipeline, which keeps decode off the CPU:
-
-```yaml
-camera:
-  kind: gstreamer
-  source: "rtspsrc location=rtsp://user:password@192.168.1.64:554/Streaming/Channels/101 latency=100 protocols=tcp ! rtph265depay ! h265parse ! nvv4l2decoder ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
-```
-
-Use `rtph264depay` and `h264parse` for an H.264 camera. `drop=true max-buffers=1` matters: it
-makes GStreamer discard stale frames rather than queue them.
-
-Verify the pipeline outside the application first:
-
-```sh
-gst-launch-1.0 rtspsrc location=... ! rtph265depay ! h265parse ! nvv4l2decoder ! fakesink
-```
-
-## 8. Configuration
-
-Start from `config/default.yaml` and set:
-
-```yaml
-inference:
-  backend: tensorrt
-  fp16: true
-  strict_backend: true    # fail loudly rather than falling back to CPU
-  engine_cache_dir: /var/lib/kz-anpr/trt_cache
-
-camera:
-  camera_id: gate-01
-
-logging:
-  level: info
-```
-
-`strict_backend: true` is the important one in production. Without it, a broken engine cache
-turns into a silent drop to CPU inference and a barrier that responds seconds late.
-
-Then re-tune the ROIs and the stop window against real footage from the barrier. The shipped
-values were tuned on a development clip and are starting points, not deployment values.
-
-## 9. Install
-
-```text
-/opt/kz-anpr/bin/kz_anpr
-/opt/kz-anpr/models/
-/etc/kz-anpr/default.yaml
-/var/lib/kz-anpr/trt_cache
-```
-
-```sh
-sudo useradd --system --home /var/lib/kz-anpr --create-home --shell /usr/sbin/nologin kz-anpr
-sudo usermod -aG video kz-anpr
-sudo install -D -m 0755 build/kz_anpr /opt/kz-anpr/bin/kz_anpr
-sudo install -D -m 0644 config/default.yaml /etc/kz-anpr/default.yaml
-sudo install -D -m 0755 tools/setup_nomeroff_env.sh /opt/kz-anpr/tools/setup_nomeroff_env.sh
-sudo install -D -m 0755 tools/nomeroff_worker.py /opt/kz-anpr/tools/nomeroff_worker.py
-sudo mkdir -p /opt/kz-anpr/requirements
-sudo cp requirements/nomeroff-jetson.txt /opt/kz-anpr/requirements/
-sudo mkdir -p /opt/kz-anpr/models && sudo cp models/*.onnx models/*.yaml /opt/kz-anpr/models/
-sudo /opt/kz-anpr/tools/setup_nomeroff_env.sh --jetson
-sudo chown -R kz-anpr:kz-anpr /var/lib/kz-anpr
-sudo install -D -m 0644 deploy/systemd/kz-anpr.service /etc/systemd/system/kz-anpr.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now kz-anpr
-```
-
-Build the engine cache as the service user, or the service will rebuild it on first start:
-
-```sh
-sudo -u kz-anpr /opt/kz-anpr/bin/kz_anpr --config /etc/kz-anpr/default.yaml --warmup
-```
-
-## 10. Verify
-
-```sh
-journalctl -u kz-anpr -f
-```
-
-Expect detector `backend=tensorrt`, `event=nomeroff_ready` with the intended model/device, then
-`event=camera_connected`. Drive a car up to the barrier and watch the state transitions through
-to `event=plate_confirmed`.
-
-Run the required matrix without changing the system power mode:
-
-```sh
-python3 tools/benchmark.py --config config/default.yaml --streams 1 \
-    --manifest data/manifests/kz_eval.csv
-python3 tools/benchmark.py --config config/default.yaml --streams 2 \
-    --manifest data/manifests/kz_eval.csv
-python3 tools/benchmark.py --config config/default.yaml --streams 4 \
-    --manifest data/manifests/kz_eval.csv
-```
-
-Run the complete bundled-video OCR research with one command:
-
-```sh
-python3 tools/benchmark.py --research
-```
-
-For a short installation check before the full real-time run:
-
-```sh
-python3 tools/benchmark.py --research --max-frames 300
-```
-
-The full suite uses `config/research.yaml`, not the production thresholds. It runs every
-combination of four OCR backends, three videos, and one/four processing threads and writes a
-timestamped JSON plus a Markdown comparison under `benchmark_results/`.
-
-The collector reads `nvpmodel -q`, `jetson_clocks --show`, and GPU metrics when available, and
-samples the full process tree for CPU/RAM. It never changes the power mode or clock settings.
-
-The periodic `event=metrics` line carries per-stage latencies and counters. Watch
-`detector_avg_ms`, `ocr_avg_ms` and `frames_dropped` for the first day.
-
-## Troubleshooting
-
-| Symptom | Cause |
+| Component | Pinned contract |
 | --- | --- |
-| `backend_unavailable ... TensorrtExecutionProvider is not present` | ONNX Runtime build has no TensorRT provider; reinstall the Jetson build |
-| First recognition takes minutes | engine cache empty or invalidated; run the warm-up tool |
-| `event=camera_stream_lost` repeatedly | switch the camera to TCP, check `read_timeout_ms`, verify the pipeline with `gst-launch-1.0` |
-| High `frames_dropped` | processing is slower than capture; check `detector_avg_ms` and confirm TensorRT is actually in use |
-| Never leaves `IDLE` | motion ROI wrong, or `motion.quiet_threshold` too high. Run with `--timeline --log-level debug` and read the motion scores |
-| Reaches `VEHICLE_NEAR` but never `VEHICLE_STOPPED` | `stop_detection` thresholds too tight for the framing; check `stationary_ms` in the state logs |
-| `status=INVALID_FORMAT` on valid plates | plate layout missing from `validation.formats` |
+| Board | Jetson Nano Developer Kit, 4 GB, aarch64 |
+| JetPack / L4T | JetPack 4.6.1 / L4T R32.7.1 |
+| CUDA / TensorRT | CUDA 10.2 / TensorRT 8.2.1 from JetPack |
+| Container | `nvcr.io/nvidia/l4t-ml:r32.7.1-py3` pinned by manifest digest |
+| Control Python | CPython 3.9.25, source SHA-256 pinned; benchmark/preflight only |
+| CUDA worker Python | JetPack Python 3.6 / NVIDIA PyTorch 1.10.0 / torchvision 0.11.0 |
+| OpenCV / NumPy | OpenCV 4.5.0 / NumPy 1.19.5 from the L4T image |
+| Project detector | Native TensorRT 8.2, CUDA, FP16, serialized engine cache |
+| Native ONNX Runtime | Microsoft aarch64 CPU package 1.11.1, SHA-256 checked |
+| EasyOCR | 1.6.2, recognition-only, English G2 model, SHA-256 checked |
+
+The container intentionally does not upgrade CUDA, TensorRT, PyTorch, torchvision, OpenCV,
+NumPy, SciPy or scikit-image. Those packages are ABI-coupled to the old JetPack image. Python
+3.9.25 controls the benchmark; GPU OCR stays in a separate Python 3.6 process so NVIDIA's
+JetPack wheel remains usable.
+
+Python 3.9 reached upstream end-of-life on October 31, 2025. Version 3.9.25 is the final release
+and is pinned here because this deployment explicitly requires 3.9; it should not be interpreted
+as a currently supported general-purpose Python baseline.
+
+## Host prerequisite
+
+Flash JetPack 4.6.x (L4T R32.7.x; 4.6.1 is the pinned reference) and install Docker plus NVIDIA
+Container Runtime. Confirm that Docker can see
+the runtime:
+
+```sh
+docker info --format '{{json .Runtimes}}'
+```
+
+The output must contain `nvidia`. Do not install Python packages, ONNX Runtime, CMake or OCR
+libraries on the host.
+
+## One-command workflow
+
+From the repository root on the Nano:
+
+```sh
+make jetson-all
+```
+
+`jetson-all` builds the image, runs the hardware preflight and real TensorRT inference, executes
+the complete 1/4-stream four-OCR research matrix, prints its comparison table, and reports the
+timestamped Markdown/JSON paths. For a bounded smoke run use
+`make jetson-all MAX_FRAMES=300`.
+
+Optional focused runs:
+
+```sh
+make docker-build
+make jetson-check
+make benchmark-1
+make benchmark-4
+make research MAX_FRAMES=300
+make run
+make run RUN_ARGS='--source rtsp://user:pass@camera/stream'
+```
+
+The build uses one compiler process. The run mounts the checkout and `models/` read-only; only
+`benchmark_results/` is writable. Existing videos, datasets, manifests, model files and prior
+results are never deleted or overwritten. Available `/dev/video*` devices and the Argus socket are
+forwarded automatically for the full-project target. Every report has a timestamped JSON and
+Markdown file.
+
+## What preflight checks
+
+`make jetson-check` fails before the benchmark when any hard contract is wrong:
+
+- host architecture and L4T R32 release;
+- registered Docker NVIDIA runtime and container GPU access;
+- control Python 3.9.25 plus the isolated Python 3.6 CUDA worker stack;
+- CUDA-enabled NVIDIA PyTorch, torchvision, OpenCV and NumPy versions;
+- TensorRT import and version supplied by JetPack;
+- native TensorRT/CUDA linkage and one real detector inference on the GPU;
+- 4 GB memory profile;
+- native ONNX Runtime CPU fallback for the legacy uint8 OCR model;
+- detector, Fast Plate OCR, EasyOCR, videos and research manifest files.
+
+It also prints the compatibility state of every OCR backend.
+
+## Four-backend compatibility policy
+
+The research harness still executes the same four named candidates and never silently drops a
+row.
+
+| Backend | Nano result | Reason |
+| --- | --- | --- |
+| `fast_plate_ocr` | TensorRT detector, CPU OCR | Official aarch64 ONNX Runtime 1.11.1 C/C++ package handles only this legacy uint8 recognizer |
+| `easyocr` | TensorRT detector, CUDA OCR | EasyOCR 1.6.2 reuses NVIDIA PyTorch 1.10; the second text detector is disabled |
+| `nomeroff` | Explicitly unavailable | Control Python is 3.9, but Nomeroff 4.0.1 also needs PyTorch >=1.12; Nano's CUDA stack is fixed at NVIDIA PyTorch 1.10 under Python 3.6 |
+| `paddleocr` | Explicitly unavailable | PaddleOCR 3.7 requires a newer Python stack and PaddlePaddle does not publish a compatible JetPack 4 aarch64 wheel |
+
+Using EasyOCR or Tesseract while labelling the row “Nomeroff” or “PaddleOCR” would invalidate the
+research comparison, so no such substitution is made. The benchmark catches each unavailable
+startup, continues, and writes the reason into the final table. A future verified, prebuilt
+JetPack 4 package can be added without changing the C++ benchmark protocol.
+
+## Runtime and results
+
+The container limits BLAS/OpenMP worker counts to one. The Nano profile uses a 256 MiB TensorRT
+builder workspace, FP16, two CPU threads for the Fast Plate OCR fallback, and one OpenCV thread.
+Four video streams share the TensorRT detector and the active OCR worker as the existing benchmark
+already defines; model weights are not multiplied four times.
+
+The Markdown table reports every backend/video/stream combination with status, FPS per stream,
+OCR average and p95 latency, peak process-tree RSS, dropped frames, recognition timeouts,
+accuracy failures, exact accuracy and CER. The JSON retains full telemetry and failure modes.
+`tegrastats` is mounted when present so RAM, GPU load, temperature, power and throttling evidence
+are sampled during each run.
+
+The bundled manifest contains only a very small smoke-test label set. It catches regressions but
+cannot establish production accuracy; use the same mounted-manifest mechanism for a representative
+labelled barrier dataset.
+
+## GPU execution policy
+
+JetPack supplies TensorRT 8.2.1 and CUDA 10.2. The C++ detector links those native libraries
+directly, builds the bundled ONNX detector into an FP16 engine once, and reuses the serialized
+engine from `benchmark_results/trt_cache`. This avoids compiling ONNX Runtime on the 4 GB board.
+`strict_backend: true` prevents the detector from silently moving to CPU, and `make jetson-check`
+executes one real frame and requires `backend=tensorrt`.
+
+The detector graph is opset 12, but its newer exporter stamped ONNX IR 10. At load time the native
+session normalizes that metadata byte to IR 8 in memory, which TensorRT 8.2 accepts; the mounted
+ONNX file is never rewritten.
+
+The legacy Fast Plate OCR network has a uint8 input that this TensorRT 8.2 path does not accept,
+so that recognizer alone uses the pinned Microsoft aarch64 ONNX Runtime CPU package. EasyOCR uses
+CUDA through NVIDIA PyTorch. `make run` selects EasyOCR by default, so both the detector and OCR
+of the normal project path use the Nano GPU. `PROJECT_OCR=fast_plate_ocr make run` selects the
+explicit mixed GPU-detector/CPU-OCR fallback.
+
+## Power mode
+
+The benchmark records state but never changes it. Set the same mode before every comparison if
+your deployment policy allows it:
+
+```sh
+sudo nvpmodel -m 0
+sudo jetson_clocks
+```
+
+Keep active cooling attached and compare sustained temperature/throttling, not only first-run FPS.

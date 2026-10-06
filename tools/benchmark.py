@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Reproducible 1/2/4-stream ANPR benchmark and telemetry collector."""
 
-from __future__ import annotations
-
 import argparse
 import copy
 import csv
@@ -18,7 +16,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,20 +24,21 @@ OCR_BACKENDS = ("fast_plate_ocr", "nomeroff", "paddleocr", "easyocr")
 RESEARCH_VIDEOS = ("video/car.mp4", "video/parking.mp4", "video/parking2.mp4")
 
 
-def command_output(command: list[str]) -> str | None:
+def command_output(command: List[str]) -> Optional[str]:
     try:
-        result = subprocess.run(command, text=True, capture_output=True, timeout=10, check=False)
+        result = subprocess.run(command, universal_newlines=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     output = (result.stdout + result.stderr).strip()
     return output or None
 
 
-def descendants(root_pid: int) -> set[int]:
+def descendants(root_pid: int) -> Set[int]:
     output = command_output(["ps", "-axo", "ppid=,pid="])
     if not output:
         return {root_pid}
-    children: dict[int, list[int]] = {}
+    children: Dict[int, List[int]] = {}
     for line in output.splitlines():
         try:
             parent, child = map(int, line.split())
@@ -57,7 +56,7 @@ def descendants(root_pid: int) -> set[int]:
     return result
 
 
-def process_usage(root_pid: int) -> tuple[float, float]:
+def process_usage(root_pid: int) -> Tuple[float, float]:
     pids = descendants(root_pid)
     output = command_output(["ps", "-axo", "pid=,%cpu=,rss="])
     cpu = 0.0
@@ -77,7 +76,7 @@ def process_usage(root_pid: int) -> tuple[float, float]:
     return cpu, rss_kib / 1024.0
 
 
-def nvidia_sample() -> dict[str, float] | None:
+def nvidia_sample() -> Optional[Dict[str, float]]:
     if shutil.which("nvidia-smi") is None:
         return None
     output = command_output([
@@ -97,25 +96,25 @@ def nvidia_sample() -> dict[str, float] | None:
 class ResourceSampler:
     def __init__(self, pid: int) -> None:
         self.pid = pid
-        self.samples: list[dict[str, float]] = []
+        self.samples: List[Dict[str, float]] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
-        self._tegrastats: subprocess.Popen[str] | None = None
-        self._tegrastats_thread: threading.Thread | None = None
-        self._tegrastats_lines: list[str] = []
+        self._tegrastats = None  # type: Optional[subprocess.Popen]
+        self._tegrastats_thread = None  # type: Optional[threading.Thread]
+        self._tegrastats_lines: List[str] = []
 
     def start(self) -> None:
         tegrastats = shutil.which("tegrastats")
         if tegrastats:
             self._tegrastats = subprocess.Popen(
                 [tegrastats, "--interval", "500"], stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True,
+                stderr=subprocess.STDOUT, universal_newlines=True,
             )
             self._tegrastats_thread = threading.Thread(target=self._read_tegrastats, daemon=True)
             self._tegrastats_thread.start()
         self._thread.start()
 
-    def stop(self) -> dict[str, Any]:
+    def stop(self) -> Dict[str, Any]:
         self._stop.set()
         self._thread.join(timeout=2)
         if self._tegrastats is not None:
@@ -130,7 +129,7 @@ class ResourceSampler:
         if not self.samples:
             return {"samples": 0}
 
-        def summary(key: str) -> dict[str, float] | None:
+        def summary(key: str) -> Optional[Dict[str, float]]:
             values = [sample[key] for sample in self.samples if key in sample]
             if not values:
                 return None
@@ -161,7 +160,7 @@ class ResourceSampler:
             if not line:
                 continue
             self._tegrastats_lines.append(line)
-            sample: dict[str, float] = {}
+            sample: Dict[str, float] = {}
             gpu = re.search(r"GR3D_FREQ\s+(\d+(?:\.\d+)?)%", line)
             ram = re.search(r"RAM\s+(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)MB", line)
             power = re.search(r"VDD_IN\s+(\d+(?:\.\d+)?)mW", line)
@@ -201,12 +200,12 @@ def levenshtein(left: str, right: str) -> int:
     return previous[-1]
 
 
-def load_ground_truth(path: Path | None) -> dict[str, list[dict[str, Any]]]:
+def load_ground_truth(path: Optional[Path]) -> Dict[str, List[Dict[str, Any]]]:
     if path is None:
         return {}
-    truth: dict[str, list[dict[str, Any]]] = {}
+    truth: Dict[str, List[Dict[str, Any]]] = {}
 
-    def optional_int(value: str | None) -> int | None:
+    def optional_int(value: Optional[str]) -> Optional[int]:
         value = (value or "").strip()
         return int(value) if value else None
 
@@ -229,10 +228,10 @@ def load_ground_truth(path: Path | None) -> dict[str, list[dict[str, Any]]]:
     return truth
 
 
-def accuracy_report(run: dict[str, Any], sources: list[str],
-                    truth: dict[str, list[dict[str, Any]]],
-                    failure_root: Path) -> dict[str, Any]:
-    cases: list[dict[str, Any]] = []
+def accuracy_report(run: Dict[str, Any], sources: List[str],
+                    truth: Dict[str, List[Dict[str, Any]]],
+                    failure_root: Path) -> Dict[str, Any]:
+    cases: List[Dict[str, Any]] = []
     for index, stream in enumerate(run.get("per_stream", [])):
         source = sources[index] if index < len(sources) else sources[0]
         labels = truth.get(source) or truth.get(Path(source).name)
@@ -326,7 +325,7 @@ def accuracy_report(run: dict[str, Any], sources: list[str],
         "low_confidence": sum(case["status"] == "LOW_CONFIDENCE" for case in cases),
         "false_ocr": sum(bool(case["predicted"]) and not case["exact"] for case in cases),
     }
-    by_region: dict[str, dict[str, float | int]] = {}
+    by_region: Dict[str, Dict[str, Union[float, int]]] = {}
     for region in sorted({case["plate_region"] for case in cases}):
         regional = [case for case in cases if case["plate_region"] == region]
         regional_chars = sum(len(case["expected"]) for case in regional)
@@ -358,21 +357,27 @@ def accuracy_report(run: dict[str, Any], sources: list[str],
     }
 
 
-def ocr_environment_metadata() -> dict[str, Any]:
+def ocr_environment_metadata() -> Dict[str, Any]:
     environments = {
-        "nomeroff": (ROOT / ".venv-nomeroff" / "bin" / "python", "nomeroff_net"),
-        "paddleocr": (ROOT / ".venv-paddleocr" / "bin" / "python", "paddleocr"),
-        "easyocr": (ROOT / ".venv-easyocr" / "bin" / "python", "easyocr"),
+        "nomeroff": (Path(os.environ.get("KZ_ANPR_NOMEROFF_PYTHON",
+                                         ROOT / ".venv-nomeroff" / "bin" / "python")),
+                     "nomeroff_net"),
+        "paddleocr": (Path(os.environ.get("KZ_ANPR_PADDLEOCR_PYTHON",
+                                          ROOT / ".venv-paddleocr" / "bin" / "python")),
+                      "paddleocr"),
+        "easyocr": (Path(os.environ.get("KZ_ANPR_EASYOCR_PYTHON",
+                                        ROOT / ".venv-easyocr" / "bin" / "python")),
+                    "easyocr"),
     }
-    result: dict[str, Any] = {}
+    result: Dict[str, Any] = {}
     for name, (python, package) in environments.items():
         if not python.is_file():
             result[name] = {"available": False, "reason": "environment not installed"}
             continue
         script = (
-            "import importlib.metadata,json,platform;"
+            "import json,platform,pkg_resources;"
             f"print(json.dumps({{'python':platform.python_version(),"
-            f"'version':importlib.metadata.version('{package}')}}))"
+            f"'version':pkg_resources.get_distribution('{package}').version}}))"
         )
         output = command_output([str(python), "-c", script])
         if not output:
@@ -385,7 +390,7 @@ def ocr_environment_metadata() -> dict[str, Any]:
     return result
 
 
-def platform_metadata() -> dict[str, Any]:
+def platform_metadata() -> Dict[str, Any]:
     git_commit = command_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
     jetpack = command_output(["bash", "-lc", "cat /etc/nv_tegra_release 2>/dev/null"])
     return {
@@ -397,13 +402,15 @@ def platform_metadata() -> dict[str, Any]:
         "python": platform.python_version(),
         "ocr_environment": ocr_environment_metadata(),
         "jetpack": jetpack,
-        "power_mode": command_output(["nvpmodel", "-q"]) if shutil.which("nvpmodel") else None,
-        "jetson_clocks": command_output(["jetson_clocks", "--show"])
-        if shutil.which("jetson_clocks") else None,
+        "power_mode": (command_output(["nvpmodel", "-q"]) if shutil.which("nvpmodel")
+                       else os.environ.get("KZ_ANPR_POWER_MODE")),
+        "jetson_clocks": (command_output(["jetson_clocks", "--show"])
+                          if shutil.which("jetson_clocks")
+                          else os.environ.get("KZ_ANPR_JETSON_CLOCKS")),
     }
 
 
-def parse_json_output(stdout: str) -> dict[str, Any]:
+def parse_json_output(stdout: str) -> Dict[str, Any]:
     for line in reversed(stdout.splitlines()):
         line = line.strip()
         if line.startswith("{"):
@@ -412,7 +419,7 @@ def parse_json_output(stdout: str) -> dict[str, Any]:
 
 
 def run_once(args: argparse.Namespace, stream_count: int, run_root: Path,
-             truth: dict[str, str]) -> dict[str, Any]:
+             truth: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
     sources = args.source[:] or [args.video]
     if len(sources) == 1:
         expanded_sources = sources * stream_count
@@ -439,7 +446,7 @@ def run_once(args: argparse.Namespace, stream_count: int, run_root: Path,
         command.extend(["--video", args.video])
 
     process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True)
+                               universal_newlines=True)
     sampler = ResourceSampler(process.pid)
     sampler.start()
     stdout, stderr = process.communicate()
@@ -459,7 +466,7 @@ def run_once(args: argparse.Namespace, stream_count: int, run_root: Path,
     return report
 
 
-def write_markdown(path: Path, report: dict[str, Any]) -> None:
+def write_markdown(path: Path, report: Dict[str, Any]) -> None:
     runs = report["runs"]
     lines = [
         "# ANPR Benchmark",
@@ -498,17 +505,17 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_research_markdown(path: Path, report: dict[str, Any]) -> None:
+def write_research_markdown(path: Path, report: Dict[str, Any]) -> None:
     lines = [
         "# Four-OCR Video Research",
         "",
         f"Timestamp: `{report['metadata']['timestamp']}`",
         "",
-        "Each 4-stream row used four independent C++ processing threads. Detector and persistent "
-        "worker models are shared where the backend supports it.",
+        "Each stream uses an independent C++ processing thread. Detector and persistent worker "
+        "models are shared where the backend supports it.",
         "",
-        "| OCR | Video | Threads | Status | FPS/stream | OCR p50 ms | OCR p95 ms | Peak RSS MB | OCR exact | Accepted exact | OCR CER |",
-        "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| OCR | Video | Streams | Status | FPS/stream | OCR avg ms | OCR p95 ms | Peak RSS MB | Dropped | Timeouts | Accuracy failures | OCR exact | Accepted exact | OCR CER |",
+        "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     def fmt(value: Any) -> str:
@@ -519,7 +526,7 @@ def write_research_markdown(path: Path, report: dict[str, Any]) -> None:
             reason = str(run.get("reason", "unavailable")).splitlines()[-1][:100]
             lines.append(
                 f"| {run['ocr_backend_requested']} | {Path(run['video']).name} | "
-                f"{run['streams']} | unavailable: {reason} | n/a | n/a | n/a | n/a | n/a | n/a | n/a |"
+                f"{run['streams']} | unavailable: {reason} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |"
             )
             continue
         aggregate = run["aggregate"]
@@ -529,12 +536,15 @@ def write_research_markdown(path: Path, report: dict[str, Any]) -> None:
         exact = accuracy.get("exact_plate_accuracy") if accuracy.get("available") else None
         ocr_exact = accuracy.get("ocr_exact_plate_accuracy") if accuracy.get("available") else None
         ocr_cer = accuracy.get("ocr_cer") if accuracy.get("available") else None
+        failures = accuracy.get("failures") if accuracy.get("available") else None
         lines.append(
             f"| {run['ocr_backend_requested']} | {Path(run['video']).name} | "
             f"{run.get('processing_threads', run['streams'])} | ok | "
-            f"{aggregate['processed_fps'] / run['streams']:.2f} | {ocr['p50_ms']:.2f} | "
+            f"{aggregate['processed_fps'] / run['streams']:.2f} | {ocr['avg_ms']:.2f} | "
             f"{ocr['p95_ms']:.2f} | {fmt((resources.get('rss_mb') or {}).get('peak'))} | "
-            f"{fmt(ocr_exact)} | {fmt(exact)} | {fmt(ocr_cer)} |"
+            f"{aggregate.get('frames_dropped', 0)} | {aggregate.get('recognition_timeouts', 0)} | "
+            f"{'n/a' if failures is None else int(failures)} | {fmt(ocr_exact)} | "
+            f"{fmt(exact)} | {fmt(ocr_cer)} |"
         )
 
     kz_runs = [
@@ -583,11 +593,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--matrix", action="store_true", help="run 1, 2 and 4 streams")
     parser.add_argument(
         "--research", action="store_true",
-        help="run all four OCR backends on all three bundled videos with 1 and 4 threads",
+        help="run all four OCR backends on all three bundled videos with 1 and 4 streams",
     )
     parser.add_argument("--ocr-backend", choices=OCR_BACKENDS, default="")
     parser.add_argument("--research-video", action="append", default=[],
                         help="override the research video suite; repeat for multiple clips")
+    parser.add_argument("--research-streams", action="append", type=int, choices=(1, 4),
+                        help="research stream count; repeat to select both (default: 1 and 4)")
     parser.add_argument("--warmup-frames", type=int, default=3)
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--backend", default="")
@@ -604,6 +616,9 @@ def main() -> int:
         print("--research already runs 1 and 4 streams; do not combine it with --matrix",
               file=sys.stderr)
         return 2
+    if args.research_streams and not args.research:
+        print("--research-streams requires --research", file=sys.stderr)
+        return 2
     if not args.binary.is_file():
         print(f"benchmark binary not found: {args.binary}; build the project first", file=sys.stderr)
         return 2
@@ -616,11 +631,12 @@ def main() -> int:
         manifest = ROOT / "data" / "manifests" / "video_research.csv"
     truth = load_ground_truth(manifest)
     if args.research:
-        runs: list[dict[str, Any]] = []
+        runs: List[Dict[str, Any]] = []
         videos = args.research_video or list(RESEARCH_VIDEOS)
+        research_streams = list(dict.fromkeys(args.research_streams or (1, 4)))
         for ocr_backend in OCR_BACKENDS:
             for video in videos:
-                for stream_count in (1, 4):
+                for stream_count in research_streams:
                     case_args = copy.copy(args)
                     case_args.ocr_backend = ocr_backend
                     case_args.video = video

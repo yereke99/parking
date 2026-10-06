@@ -1,17 +1,19 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.10)
 
 project(kz_anpr VERSION 1.0.0 LANGUAGES CXX)
 
 option(KZ_ANPR_BUILD_RUNTIME "Build the OpenCV-based ANPR runtime" ON)
 option(KZ_ANPR_BUILD_TESTS "Build deterministic unit tests" ON)
 option(KZ_ANPR_WITH_ONNXRUNTIME "Enable the ONNX Runtime inference backend" ON)
+option(KZ_ANPR_WITH_TENSORRT "Enable the native TensorRT inference backend when available" ON)
+option(KZ_ANPR_REQUIRE_TENSORRT "Fail configuration when native TensorRT is unavailable" OFF)
 option(KZ_ANPR_SANITIZERS "Enable address and undefined-behaviour sanitizers" OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -27,7 +29,12 @@ function(kz_anpr_configure_target target)
     target_compile_options(${target} PRIVATE ${KZ_ANPR_WARNINGS})
     if(KZ_ANPR_SANITIZERS AND NOT MSVC)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.13)
+            target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+        else()
+            set_property(TARGET ${target} APPEND_STRING PROPERTY
+                LINK_FLAGS " -fsanitize=address,undefined")
+        endif()
     endif()
 endfunction()
 
@@ -48,7 +55,11 @@ add_library(kz_anpr_core
     src/validation/plate_validator.cpp
 )
 target_include_directories(kz_anpr_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_features(kz_anpr_core PUBLIC cxx_std_20)
+target_compile_features(kz_anpr_core PUBLIC cxx_std_17)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    # JetPack 4.x ships GCC 7. std::filesystem lives in a separate compatibility library there.
+    target_link_libraries(kz_anpr_core PUBLIC stdc++fs)
+endif()
 kz_anpr_configure_target(kz_anpr_core)
 
 # ---------------------------------------------------------------------------
@@ -103,10 +114,37 @@ if(KZ_ANPR_BUILD_RUNTIME)
             list(APPEND KZ_ANPR_RUNTIME_SOURCES src/inference/onnxruntime_session.cpp)
         else()
             message(WARNING
-                "ONNX Runtime not found. Building with the OpenCV DNN backend only. "
+                "ONNX Runtime not found. Building without the ONNX Runtime backends. "
+                "Native TensorRT may still be enabled below. "
                 "The default Nomeroff OCR worker remains usable; the legacy Fast Plate OCR "
                 "comparison backend will refuse to start because OpenCV DNN cannot supply its "
                 "uint8 input tensor.")
+        endif()
+
+        set(KZ_ANPR_TENSORRT_FOUND OFF)
+        if(KZ_ANPR_WITH_TENSORRT)
+            find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+                HINTS /usr/include/aarch64-linux-gnu /usr/include /usr/local/include)
+            find_library(TENSORRT_NVINFER_LIBRARY nvinfer
+                HINTS /usr/lib/aarch64-linux-gnu /usr/lib /usr/local/lib)
+            find_library(TENSORRT_ONNX_PARSER_LIBRARY nvonnxparser
+                HINTS /usr/lib/aarch64-linux-gnu /usr/lib /usr/local/lib)
+            find_path(CUDA_RUNTIME_INCLUDE_DIR cuda_runtime_api.h
+                HINTS /usr/local/cuda/include)
+            find_library(CUDA_RUNTIME_LIBRARY cudart
+                HINTS /usr/local/cuda/lib64 /usr/local/cuda/targets/aarch64-linux/lib)
+            if(TENSORRT_INCLUDE_DIR AND TENSORRT_NVINFER_LIBRARY AND
+               TENSORRT_ONNX_PARSER_LIBRARY AND CUDA_RUNTIME_INCLUDE_DIR AND
+               CUDA_RUNTIME_LIBRARY)
+                set(KZ_ANPR_TENSORRT_FOUND ON)
+                list(APPEND KZ_ANPR_RUNTIME_SOURCES src/inference/tensorrt_session.cpp)
+            elseif(KZ_ANPR_REQUIRE_TENSORRT)
+                message(FATAL_ERROR
+                    "Native TensorRT/CUDA development libraries were not found. The Jetson "
+                    "image must provide NvInfer.h, nvonnxparser, nvinfer and cudart.")
+            else()
+                message(STATUS "Native TensorRT not found; the portable build will omit it.")
+            endif()
         endif()
 
         add_library(kz_anpr_runtime ${KZ_ANPR_RUNTIME_SOURCES})
@@ -133,6 +171,14 @@ if(KZ_ANPR_BUILD_RUNTIME)
                 target_include_directories(kz_anpr_runtime SYSTEM PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
                 target_link_libraries(kz_anpr_runtime PUBLIC ${ONNXRUNTIME_LIBRARY})
             endif()
+        endif()
+        if(KZ_ANPR_TENSORRT_FOUND)
+            target_compile_definitions(kz_anpr_runtime PUBLIC KZ_ANPR_WITH_TENSORRT=1)
+            target_include_directories(kz_anpr_runtime SYSTEM PUBLIC
+                ${TENSORRT_INCLUDE_DIR} ${CUDA_RUNTIME_INCLUDE_DIR})
+            target_link_libraries(kz_anpr_runtime PUBLIC
+                ${TENSORRT_NVINFER_LIBRARY} ${TENSORRT_ONNX_PARSER_LIBRARY}
+                ${CUDA_RUNTIME_LIBRARY})
         endif()
 
         add_executable(kz_anpr src/main.cpp)

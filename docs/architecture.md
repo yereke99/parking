@@ -61,7 +61,7 @@ worth nothing. There is no queue that can grow.
 
 | Backend | Used for |
 | --- | --- |
-| `tensorrt` | Jetson. FP16, serialised engine cache, falls through to CUDA then CPU per subgraph |
+| `tensorrt` | Jetson. Native TensorRT FP16 with a serialized engine cache; the Nano profile forbids detector CPU fallback |
 | `onnx_cuda` | Any CUDA GPU without TensorRT |
 | `onnx_cpu` | Portable fallback, and the development default on x86 and macOS |
 | `opencv_dnn` | Last resort when ONNX Runtime is not linked. Detector only |
@@ -69,10 +69,9 @@ worth nothing. There is no queue that can grow.
 `auto` walks that list and takes the first that loads. `strict_backend: true` turns a fallback
 into a startup failure instead, which is what a production Jetson should run with.
 
-TensorRT is reached through ONNX Runtime's execution provider rather than hand-written TensorRT
-code. That gives FP16 engines and an engine cache while keeping one code path for every target;
-a hand-written builder would duplicate memory management and turn the x86 development path into
-a second implementation.
+Portable builds may reach TensorRT through ONNX Runtime's execution provider. The Jetson Nano
+Docker image instead links the compact native TensorRT 8.2 session so it does not have to compile
+ONNX Runtime on a 4 GB board. Both paths implement the same `IInferenceSession` contract.
 
 Detector buffers are allocated once. The session owns its input and output host buffers, the detector
 holds `cv::Mat` headers directly over the input tensor so `cv::split` writes the planar NCHW

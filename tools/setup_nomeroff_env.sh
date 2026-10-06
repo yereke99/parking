@@ -17,9 +17,15 @@ fi
 if [[ "$mode" == "jetson" ]]; then
     python_command="${PYTHON:-python3}"
     "$python_command" - <<'PY'
+import sys
 import cv2, torch, torchvision
 print(f"Using JetPack PyTorch {torch.__version__} from {torch.__file__}")
 print(f"Using torchvision {torchvision.__version__}")
+if sys.version_info < (3, 9):
+    raise SystemExit(
+        "Nomeroff 4.0.1 requires Python >=3.9 and cannot be installed on Jetson Nano/JetPack 4. "
+        "Use Dockerfile.jetson-nano; its research report marks this backend unavailable."
+    )
 if not torch.cuda.is_available():
     raise SystemExit("Jetson setup requires a CUDA-enabled NVIDIA PyTorch installation")
 PY

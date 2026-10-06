@@ -123,6 +123,11 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (cli.print_backends) {
+        std::cout << "native_tensorrt_linked=" << (anpr::tensorRTAvailable() ? "yes" : "no")
+                  << '\n';
+        if (anpr::tensorRTAvailable()) {
+            std::cout << "provider=NativeTensorRTExecutionProvider\n";
+        }
         std::cout << "onnxruntime_linked=" << (anpr::onnxRuntimeAvailable() ? "yes" : "no") << '\n';
         for (const std::string& provider : anpr::availableProviders()) {
             std::cout << "provider=" << provider << '\n';

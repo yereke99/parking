@@ -32,17 +32,17 @@ CACHE_DIR="${CACHE_DIR:-models/trt_cache}"
 echo "Available inference providers:"
 "${BINARY}" --print-backends
 
-if ! "${BINARY}" --print-backends | grep -q "TensorrtExecutionProvider"; then
+if ! "${BINARY}" --print-backends | grep -Eq \
+    'provider=(NativeTensorRTExecutionProvider|TensorrtExecutionProvider)'; then
     echo
-    echo "error: this ONNX Runtime build has no TensorRT execution provider." >&2
-    echo "On Jetson, install the JetPack build of onnxruntime-gpu that matches your" >&2
-    echo "TensorRT and CUDA versions, then rebuild kz_anpr against it." >&2
+    echo "error: this binary has neither native TensorRT nor the ONNX Runtime TensorRT provider." >&2
+    echo "On Jetson Nano, use the pinned Docker build instead of compiling ONNX Runtime." >&2
     exit 2
 fi
 
 mkdir -p "${CACHE_DIR}"
 echo
-echo "Building engines into ${CACHE_DIR}. This takes several minutes per model."
+echo "Building engines into ${CACHE_DIR}. This can take several minutes per model."
 echo "Do not interrupt it: a partial cache entry is discarded and rebuilt on the next run."
 echo
 

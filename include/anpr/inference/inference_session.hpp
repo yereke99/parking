@@ -80,4 +80,7 @@ std::unique_ptr<IInferenceSession> createInferenceSession(const SessionRequest& 
 /// Providers ONNX Runtime reports on this machine. Empty when ONNX Runtime is not linked.
 [[nodiscard]] std::vector<std::string> availableProviders();
 
+/// True when this binary links the native JetPack TensorRT/CUDA implementation.
+[[nodiscard]] bool tensorRTAvailable();
+
 }  // namespace anpr

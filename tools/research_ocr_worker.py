@@ -7,11 +7,8 @@ the comparison slower and less accurate. Stdout is reserved for the binary proto
 startup chatter is redirected to stderr.
 """
 
-from __future__ import annotations
-
 import argparse
 import contextlib
-import importlib.metadata
 import json
 import os
 import platform
@@ -21,7 +18,12 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Tuple
+
+try:
+    from importlib import metadata as importlib_metadata
+except ImportError:  # Python 3.6 in JetPack 4.x.
+    import importlib_metadata
 
 import numpy as np
 
@@ -67,7 +69,7 @@ class MockRecognizer:
     def __init__(self, engine: str) -> None:
         self.engine = engine
 
-    def recognize_batch(self, crops: Iterable[np.ndarray]) -> list[Recognition]:
+    def recognize_batch(self, crops: Iterable[np.ndarray]) -> List[Recognition]:
         results = []
         for crop in crops:
             if crop.size == 0:
@@ -82,10 +84,10 @@ class MockRecognizer:
 class EasyRecognizer:
     engine = "easyocr"
     region = "general"
-    model_name = "latin_g2"
+    model_name = "english_g2"
     fp16 = False
 
-    def __init__(self, languages: list[str], requested_device: str, model_cache: Path,
+    def __init__(self, languages: List[str], requested_device: str, model_cache: Path,
                  allow_download: bool) -> None:
         import torch
         import easyocr
@@ -98,7 +100,7 @@ class EasyRecognizer:
             requested_device == "auto" and torch.cuda.is_available()
         )
         self.device = "cuda" if use_cuda else "cpu"
-        self.version = importlib.metadata.version("easyocr")
+        self.version = importlib_metadata.version("easyocr")
         storage = model_cache / "easyocr"
         storage.mkdir(parents=True, exist_ok=True)
         self.reader = easyocr.Reader(
@@ -113,7 +115,7 @@ class EasyRecognizer:
             quantize=not use_cuda,
         )
 
-    def recognize_batch(self, crops: Iterable[np.ndarray]) -> list[Recognition]:
+    def recognize_batch(self, crops: Iterable[np.ndarray]) -> List[Recognition]:
         results = []
         for crop in crops:
             started = time.perf_counter()
@@ -148,7 +150,7 @@ class EasyRecognizer:
         return results
 
 
-def _paddle_payload(result: Any) -> dict[str, Any]:
+def _paddle_payload(result: Any) -> Dict[str, Any]:
     """Accept the dict-like and JSON result variants exposed across PaddleOCR 3.x."""
     candidates = [result]
     for attribute in ("json", "res"):
@@ -188,7 +190,7 @@ class PaddleRecognizer:
 
         from paddleocr import TextRecognition
 
-        self.version = importlib.metadata.version("paddleocr")
+        self.version = importlib_metadata.version("paddleocr")
         self.model_name = model_name
         self.inference_engine = inference_engine
         if requested_device == "mps":
@@ -221,7 +223,7 @@ class PaddleRecognizer:
         except ImportError:
             return "cpu"
 
-    def recognize_batch(self, crops: Iterable[np.ndarray]) -> list[Recognition]:
+    def recognize_batch(self, crops: Iterable[np.ndarray]) -> List[Recognition]:
         crops = list(crops)
         if not crops:
             return []
@@ -244,7 +246,7 @@ class PaddleRecognizer:
         return results
 
 
-def _build_recognizer(args: argparse.Namespace) -> tuple[Any, float]:
+def _build_recognizer(args: argparse.Namespace) -> Tuple[Any, float]:
     started = time.perf_counter()
     if args.mock:
         recognizer: Any = MockRecognizer(args.engine)
@@ -287,7 +289,7 @@ def _serve(recognizer: Any, startup_ms: float) -> int:
         header = stdin.readline()
         if not header:
             return 0
-        fields: list[str] = []
+        fields: List[str] = []
         try:
             fields = header.decode("ascii").rstrip("\r\n").split("\t")
             command = fields[0]

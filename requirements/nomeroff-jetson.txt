@@ -1,3 +1,7 @@
+# JetPack 5/6 path only. This file is NOT compatible with Jetson Nano / JetPack 4: Nomeroff 4.0.1
+# requires Python >=3.9 and PyTorch >=1.12, while the CUDA-capable Nano worker stack is Python 3.6
+# and NVIDIA PyTorch 1.10. The container's control Python 3.9 cannot change that CUDA wheel ABI.
+# Use Dockerfile.jetson-nano; it records Nomeroff as unavailable honestly.
 # Deliberately excludes torch and torchvision. Install NVIDIA's JetPack-matched wheels first.
 # These are direct runtime requirements for Nomeroff's crop OCR path; transitive dependencies are
 # resolved inside .venv-nomeroff and verified not to replace the preinstalled torch build.
