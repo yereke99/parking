@@ -422,14 +422,15 @@ std::optional<std::string> AnprPipeline::saveDebugCrop(const cv::Mat& crop, std:
     if (++saved_crop_count_ > config_.debug.max_files) {
         std::vector<filesystem::directory_entry> files;
         for (const auto& entry : filesystem::directory_iterator(directory, ignored)) {
-            if (entry.is_regular_file(ignored)) {
+            if (filesystem::is_regular_file(entry.path(), ignored)) {
                 files.push_back(entry);
             }
         }
         if (files.size() > static_cast<std::size_t>(config_.debug.max_files)) {
             std::sort(files.begin(), files.end(), [](const auto& lhs, const auto& rhs) {
                 std::error_code error;
-                return lhs.last_write_time(error) < rhs.last_write_time(error);
+                return filesystem::last_write_time(lhs.path(), error) <
+                       filesystem::last_write_time(rhs.path(), error);
             });
             const std::size_t remove_count =
                 files.size() - static_cast<std::size_t>(config_.debug.max_files);
