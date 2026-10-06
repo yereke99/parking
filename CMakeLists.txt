@@ -142,8 +142,10 @@ if(KZ_ANPR_BUILD_RUNTIME)
                 list(APPEND KZ_ANPR_RUNTIME_SOURCES src/inference/tensorrt_session.cpp)
             elseif(KZ_ANPR_REQUIRE_TENSORRT)
                 message(FATAL_ERROR
-                    "Native TensorRT/CUDA development libraries were not found. The Jetson "
-                    "image must provide NvInfer.h, nvonnxparser, nvinfer and cudart.")
+                    "Native TensorRT/CUDA development libraries were not found (NvInfer.h, "
+                    "nvonnxparser, nvinfer, cudart). On JetPack 4 the NVIDIA container runtime "
+                    "mounts them from the host: build with Docker's default runtime set to nvidia "
+                    "on a Jetson with JetPack's CUDA and TensorRT components installed.")
             else()
                 message(STATUS "Native TensorRT not found; the portable build will omit it.")
             endif()

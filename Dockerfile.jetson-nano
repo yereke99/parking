@@ -1,6 +1,13 @@
-# Jetson Nano 4 GB / JetPack 4.6.1 / L4T R32.7.1 only.
-# Build this image on the Jetson. The digest prevents a future tag change from silently replacing
-# CUDA 10.2, PyTorch 1.10, OpenCV 4.5 or the JetPack Python 3.6 ABI.
+# Jetson Nano 4 GB / JetPack 4.6.x / L4T R32.7.x only. Build this image on the Jetson.
+# The digest prevents a future tag change from silently replacing CUDA 10.2, PyTorch 1.10,
+# OpenCV 4.5 or the JetPack Python 3.6 ABI.
+#
+# CUDA, cuDNN and TensorRT are deliberately NOT installed in this image. On JetPack 4 the NVIDIA
+# container runtime bind-mounts the host's copies (libraries, headers, nvcc) read-only into every
+# container, and into every RUN step when Docker's default runtime is nvidia. dpkg cannot install
+# those packages over the mounts ("Read-only file system", "Invalid cross-device link"), so the
+# builder compiles against the mounted host files and `docker run --runtime nvidia` supplies the
+# same libraries at run time. tools/jetson_docker.sh checks both preconditions before building.
 ARG L4T_ML_IMAGE=nvcr.io/nvidia/l4t-ml:r32.7.1-py3@sha256:238be76a09a10904b6b9d3cfca5cd2b34c369a3c3c99340050f825998f552a5b
 
 FROM ${L4T_ML_IMAGE} AS builder
@@ -10,46 +17,22 @@ ARG ONNXRUNTIME_VERSION=1.11.1
 ARG ONNXRUNTIME_SHA256=bb9ca658a6a0acc7b9e4288647277a9ce9d86b063a2403a51d5c0d2e4df43603
 ARG PYTHON_VERSION=3.9.25
 ARG PYTHON_SHA256=00e07d7c0f2f0cc002432d1ee84d2a40dae404a99303e3f97701c10966c91834
-ARG JETSON_APT_KEY_SHA256=576f852981855e5c6cfb9b625ffb51b984ca451f1181b2e70435b005034fad55
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
-        ca-certificates curl gnupg \
-    && rm -rf /var/lib/apt/lists/*
-
-# The archived L4T ML image does not carry NVIDIA's APT source even though its packages depend on
-# that repository. Register the official R32.7 common/T210 repositories with a pinned signing key
-# before asking apt for CUDA/TensorRT development headers. Nothing is installed on the host.
-RUN curl -L --fail --retry 3 \
-        https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
-        -o /tmp/jetson-ota-public.asc \
-    && echo "${JETSON_APT_KEY_SHA256}  /tmp/jetson-ota-public.asc" | sha256sum -c - \
-    && gpg --dearmor < /tmp/jetson-ota-public.asc \
-        > /usr/share/keyrings/nvidia-jetson.gpg \
-    && printf '%s\n' \
-        'deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] https://repo.download.nvidia.com/jetson/common r32.7 main' \
-        'deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] https://repo.download.nvidia.com/jetson/t210 r32.7 main' \
-        > /etc/apt/sources.list.d/nvidia-jetson-r32.list \
-    && rm /tmp/jetson-ota-public.asc
-
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
-        build-essential cmake pkg-config \
-        cuda-cudart-dev-10-2=10.2.300-1 \
-        libnvinfer-dev=8.2.1-1+cuda10.2 \
-        libnvinfer-plugin-dev=8.2.1-1+cuda10.2 \
-        libnvonnxparsers-dev=8.2.1-1+cuda10.2 \
+        build-essential ca-certificates cmake curl pkg-config \
         libbz2-dev libffi-dev liblzma-dev libreadline-dev libsqlite3-dev libssl-dev \
         uuid-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
+COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
+
 # Ubuntu 18.04 in JetPack 4 has no supported Python 3.9 package. Build the final 3.9 security
 # release once in the image builder (single job, no PGO/LTO) and copy only its installed runtime.
 # NVIDIA PyTorch remains isolated on /usr/bin/python3 (3.6) because its wheel is ABI-specific.
-RUN curl -L --fail --retry 3 \
+RUN fetch-verified \
         "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
-        -o /tmp/python.tar.xz \
-    && echo "${PYTHON_SHA256}  /tmp/python.tar.xz" | sha256sum -c - \
+        "${PYTHON_SHA256}" /tmp/python.tar.xz \
     && mkdir -p /tmp/python-src \
     && tar -xJf /tmp/python.tar.xz -C /tmp/python-src --strip-components=1 \
     && cd /tmp/python-src \
@@ -59,15 +42,15 @@ RUN curl -L --fail --retry 3 \
     && ln -s python3.9 /opt/python3.9/bin/python3 \
     && ln -s python3.9 /opt/python3.9/bin/python \
     && /opt/python3.9/bin/python3.9 --version \
-    && rm /tmp/python.tar.xz
+    && cd / \
+    && rm -rf /tmp/python.tar.xz /tmp/python-src
 
 # Microsoft publishes an aarch64 CPU C/C++ package for ORT 1.11.1. It is used only by the legacy
-# uint8 Fast Plate OCR model. The detector is compiled against the native TensorRT 8.2 and CUDA
-# libraries already pinned by the L4T image, avoiding a large device-local ONNX Runtime build.
-RUN curl -L --fail --retry 3 \
+# uint8 Fast Plate OCR model. The detector is compiled against the host's native TensorRT 8.2 and
+# CUDA 10.2 libraries, avoiding a large device-local ONNX Runtime build.
+RUN fetch-verified \
         "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-aarch64-${ONNXRUNTIME_VERSION}.tgz" \
-        -o /tmp/onnxruntime.tgz \
-    && echo "${ONNXRUNTIME_SHA256}  /tmp/onnxruntime.tgz" | sha256sum -c - \
+        "${ONNXRUNTIME_SHA256}" /tmp/onnxruntime.tgz \
     && mkdir -p /opt/onnxruntime \
     && tar -xzf /tmp/onnxruntime.tgz -C /opt/onnxruntime --strip-components=1 \
     && rm /tmp/onnxruntime.tgz
@@ -91,37 +74,32 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG EASYOCR_MODEL_SHA256=1b5eaebf1c062de6205560c97ffcfa8dc0e6f413c340e8adc5cfc57e159f61ff
 ARG PIP_SHA256=deaf32dcd9ab821e359cd8330786bcd077604b5c5730c0b096eda46f95c24a2d
 
-COPY --from=builder /usr/share/keyrings/nvidia-jetson.gpg \
-    /usr/share/keyrings/nvidia-jetson.gpg
-COPY --from=builder /etc/apt/sources.list.d/nvidia-jetson-r32.list \
-    /etc/apt/sources.list.d/nvidia-jetson-r32.list
-
+# Ubuntu packages only: CUDA, cuDNN and TensorRT come from the host at run time (see the top).
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         ca-certificates curl libbz2-1.0 libffi6 libgomp1 liblzma5 libreadline7 libsqlite3-0 \
-        cuda-cudart-10-2=10.2.300-1 \
-        libnvinfer8=8.2.1-1+cuda10.2 \
-        libnvinfer-plugin8=8.2.1-1+cuda10.2 \
-        libnvonnxparsers8=8.2.1-1+cuda10.2 \
         libssl1.1 libuuid1 procps python3-pip unzip zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
+COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
 COPY requirements/jetson-nano.lock /tmp/jetson-nano.lock
-RUN python3 -m pip download --no-deps --dest /tmp pip==21.3.1 \
+# The base image's Debian python3-yaml (pulled in by llvm-9-dev) is a distutils install that
+# upstream pip cannot uninstall. Install the pinned set alongside the Debian copies instead:
+# /usr/local/lib/python3.6/dist-packages precedes /usr/lib/python3/dist-packages on sys.path.
+RUN python3 -m pip download --no-deps --index-url https://pypi.org/simple --dest /tmp pip==21.3.1 \
     && echo "${PIP_SHA256}  /tmp/pip-21.3.1-py3-none-any.whl" | sha256sum -c - \
     && python3 -m pip install --no-index /tmp/pip-21.3.1-py3-none-any.whl \
     && rm /tmp/pip-21.3.1-py3-none-any.whl \
-    && python3 -m pip install --no-cache-dir --no-deps --require-hashes \
+    && python3 -m pip install --no-cache-dir --no-deps --require-hashes --ignore-installed \
         -r /tmp/jetson-nano.lock \
     && rm /tmp/jetson-nano.lock
 
 # Recognition-only EasyOCR needs only the 14 MB English recognizer, not the large CRAFT detector.
 # The hash is checked at image build and runtime downloads remain disabled.
 RUN mkdir -p /opt/kz-anpr/models/research/easyocr \
-    && curl -L --fail --retry 3 \
+    && fetch-verified \
         https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.zip \
-        -o /tmp/english_g2.zip \
-    && echo "${EASYOCR_MODEL_SHA256}  /tmp/english_g2.zip" | sha256sum -c - \
+        "${EASYOCR_MODEL_SHA256}" /tmp/english_g2.zip \
     && unzip -q /tmp/english_g2.zip -d /opt/kz-anpr/models/research/easyocr \
     && rm /tmp/english_g2.zip
 

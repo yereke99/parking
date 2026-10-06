@@ -42,11 +42,39 @@ if [[ "$action" == "build" ]]; then
     default_runtime="$("$docker_bin" info --format '{{.DefaultRuntime}}' 2>/dev/null || true)"
     if [[ "$default_runtime" != "nvidia" ]]; then
         echo "ERROR: Docker's default runtime must be nvidia while building on JetPack 4." >&2
-        echo "TensorRT links against Jetson driver libraries that NVIDIA mounts into containers." >&2
+        echo "CUDA, TensorRT and the Jetson driver libraries are mounted from the host into" >&2
+        echo "build steps only by the nvidia runtime; the image does not contain them." >&2
         echo "Set \"default-runtime\": \"nvidia\" in /etc/docker/daemon.json, restart Docker," >&2
         echo "and verify: docker info --format '{{.DefaultRuntime}}'" >&2
         exit 3
     fi
+    # The build compiles against these host files through the NVIDIA runtime's CSV mounts. Check
+    # them here instead of failing after the long Python build.
+    csv_dir=/etc/nvidia-container-runtime/host-files-for-container.d
+    missing=()
+    for required in \
+        "$csv_dir/cuda.csv" \
+        "$csv_dir/cudnn.csv" \
+        "$csv_dir/tensorrt.csv" \
+        /usr/local/cuda-10.2/bin/nvcc \
+        /usr/local/cuda-10.2/include/cuda_runtime_api.h \
+        /usr/local/cuda-10.2/lib64/libcudart.so \
+        /usr/include/aarch64-linux-gnu/NvInfer.h \
+        /usr/include/aarch64-linux-gnu/NvOnnxParser.h \
+        /usr/lib/aarch64-linux-gnu/libnvinfer.so \
+        /usr/lib/aarch64-linux-gnu/libnvonnxparser.so; do
+        [[ -e "$required" ]] || missing+=("$required")
+    done
+    if (( ${#missing[@]} > 0 )); then
+        echo "ERROR: JetPack CUDA/TensorRT files that the build mounts from this host are missing:" >&2
+        printf '  %s\n' "${missing[@]}" >&2
+        echo "Install the JetPack components on the Jetson, then rebuild:" >&2
+        echo "  sudo apt-get update && sudo apt-get install nvidia-jetpack" >&2
+        exit 3
+    fi
+    # BuildKit does not run build steps through Docker's default runtime, so the mounts above
+    # would be missing. Use the classic builder.
+    export DOCKER_BUILDKIT=0
     exec "$docker_bin" build --file Dockerfile.jetson-nano --tag "$image" .
 fi
 if ! "$docker_bin" info --format '{{json .Runtimes}}' | grep -q 'nvidia'; then

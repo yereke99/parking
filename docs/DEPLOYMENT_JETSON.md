@@ -20,10 +20,13 @@ NumPy, SciPy or scikit-image. Those packages are ABI-coupled to the old JetPack 
 3.9.25 controls the benchmark; GPU OCR stays in a separate Python 3.6 process so NVIDIA's
 JetPack wheel remains usable.
 
-The archived L4T ML image omits NVIDIA's APT source configuration. During the image build only,
-the Dockerfile registers NVIDIA's official `common` and `t210` R32.7 repositories using a
-SHA-256-pinned signing key, then installs exact CUDA 10.2/TensorRT 8.2.1 development package
-versions. The Jetson host remains unchanged.
+CUDA, cuDNN and TensorRT are not installed in the image. On JetPack 4 the NVIDIA container runtime
+mounts the host's copies read-only into every container (libraries, headers and `nvcc`, as listed
+in `/etc/nvidia-container-runtime/host-files-for-container.d/*.csv`), and into every
+`docker build` step when `nvidia` is Docker's default runtime. The builder compiles against those
+files and `docker run --runtime nvidia` supplies the same libraries at run time. Installing these
+packages with apt inside the image cannot work: dpkg fails on the mounted paths with
+`Read-only file system` or `Invalid cross-device link`. The Jetson host remains unchanged.
 
 Python 3.9 reached upstream end-of-life on October 31, 2025. Version 3.9.25 is the final release
 and is pinned here because this deployment explicitly requires 3.9; it should not be interpreted
@@ -31,20 +34,38 @@ as a currently supported general-purpose Python baseline.
 
 ## Host prerequisite
 
-Flash JetPack 4.6.x with L4T R32.7.x and install Docker plus NVIDIA Container Runtime. The host
-release format is `R32 (release), REVISION: 7.x`; the launcher parses that NVIDIA format rather
-than looking for a nonexistent literal `R32.7` substring. NVIDIA published the L4T ML image for
-R32.7.1, and it is used as the pinned R32.7 user-space baseline on R32.7.x hosts. JetPack driver
-libraries such as `libnvmedia` and `libnvdla_compiler` are injected by NVIDIA Container Runtime;
-make `nvidia` Docker's default runtime so they are also available during `docker build`. Confirm
-both the registered runtimes and the default:
+Flash JetPack 4.6.x with L4T R32.7.x, including its CUDA and TensorRT components
+(`sudo apt-get install nvidia-jetpack` adds them if they are missing), and install Docker plus
+NVIDIA Container Runtime. The host release format is `R32 (release), REVISION: 7.x`; the launcher
+parses that NVIDIA format rather than looking for a nonexistent literal `R32.7` substring. NVIDIA
+published the L4T ML image for R32.7.1, and it is used as the pinned R32.7 user-space baseline on
+R32.7.x hosts. CUDA, TensorRT and JetPack driver libraries such as `libnvmedia` and
+`libnvdla_compiler` are injected by NVIDIA Container Runtime; make `nvidia` Docker's default
+runtime in `/etc/docker/daemon.json` so they are also available during `docker build`:
+
+```json
+{
+    "runtimes": {
+        "nvidia": {
+            "path": "nvidia-container-runtime",
+            "runtimeArgs": []
+        }
+    },
+    "default-runtime": "nvidia"
+}
+```
+
+Restart Docker with `sudo systemctl restart docker`, then confirm both the registered runtimes and
+the default:
 
 ```sh
 docker info --format '{{json .Runtimes}}'
 docker info --format '{{.DefaultRuntime}}'
 ```
 
-The first output must contain `nvidia`, and the second must be `nvidia`. Do not install Python
+The first output must contain `nvidia`, and the second must be `nvidia`. `make docker-build`
+verifies this and the host CUDA/TensorRT files before it starts, and uses Docker's classic builder
+because BuildKit does not run build steps through the default runtime. Do not install Python
 packages, ONNX Runtime, CMake or OCR libraries on the host.
 
 ## One-command workflow
