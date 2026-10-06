@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.10)
 
 project(kz_anpr VERSION 1.0.0 LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 option(KZ_ANPR_BUILD_RUNTIME "Build the OpenCV-based ANPR runtime" ON)
 option(KZ_ANPR_BUILD_TESTS "Build deterministic unit tests" ON)
 option(KZ_ANPR_WITH_ONNXRUNTIME "Enable the ONNX Runtime inference backend" ON)
@@ -149,7 +151,7 @@ if(KZ_ANPR_BUILD_RUNTIME)
 
         add_library(kz_anpr_runtime ${KZ_ANPR_RUNTIME_SOURCES})
         target_include_directories(kz_anpr_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-        target_link_libraries(kz_anpr_runtime PUBLIC kz_anpr_core ${OpenCV_LIBS})
+        target_link_libraries(kz_anpr_runtime PUBLIC kz_anpr_core Threads::Threads ${OpenCV_LIBS})
         target_include_directories(kz_anpr_runtime SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})
         kz_anpr_configure_target(kz_anpr_runtime)
 
