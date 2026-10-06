@@ -5,7 +5,7 @@ This path targets the original NVIDIA Jetson Nano Developer Kit, not Orin:
 | Component | Pinned contract |
 | --- | --- |
 | Board | Jetson Nano Developer Kit, 4 GB, aarch64 |
-| JetPack / L4T | JetPack 4.6.1 / L4T R32.7.1 |
+| Host JetPack / L4T | JetPack 4.6.1-4.6.6 / L4T R32.7.x (including R32.7.6) |
 | CUDA / TensorRT | CUDA 10.2 / TensorRT 8.2.1 from JetPack |
 | Container | `nvcr.io/nvidia/l4t-ml:r32.7.1-py3` pinned by manifest digest |
 | Control Python | CPython 3.9.25, source SHA-256 pinned; benchmark/preflight only |
@@ -26,8 +26,10 @@ as a currently supported general-purpose Python baseline.
 
 ## Host prerequisite
 
-Flash JetPack 4.6.x (L4T R32.7.x; 4.6.1 is the pinned reference) and install Docker plus NVIDIA
-Container Runtime. Confirm that Docker can see
+Flash JetPack 4.6.x with L4T R32.7.x and install Docker plus NVIDIA Container Runtime. The host
+release format is `R32 (release), REVISION: 7.x`; the launcher parses that NVIDIA format rather
+than looking for a nonexistent literal `R32.7` substring. NVIDIA published the L4T ML image for
+R32.7.1, and it is used as the pinned R32.7 user-space baseline on R32.7.x hosts. Confirm Docker can see
 the runtime:
 
 ```sh

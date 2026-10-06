@@ -23,10 +23,17 @@ case "$action" in
         ;;
 esac
 
-if [[ ! -f /etc/nv_tegra_release ]] || ! grep -q 'R32\.7' /etc/nv_tegra_release; then
+if [[ ! -f /etc/nv_tegra_release ]] || \
+   ! grep -Eq '^# R32 \(release\), REVISION: 7\.[0-9]+' /etc/nv_tegra_release; then
+    detected_release="$(sed -n '1p' /etc/nv_tegra_release 2>/dev/null || true)"
     echo "ERROR: this pinned image requires Jetson Linux R32.7.x (JetPack 4.6.x)." >&2
+    echo "Detected: ${detected_release:-/etc/nv_tegra_release is missing}" >&2
     exit 3
 fi
+host_l4t="$(sed -n \
+    's/^# R\([0-9][0-9]*\) (release), REVISION: \([0-9][0-9.]*\).*/R\1.\2/p' \
+    /etc/nv_tegra_release)"
+echo "Jetson host detected: ${host_l4t} ($(uname -m))"
 if [[ "$(uname -m)" != "aarch64" ]]; then
     echo "ERROR: expected aarch64 host, got $(uname -m)." >&2
     exit 3

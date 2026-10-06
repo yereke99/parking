@@ -25,8 +25,9 @@ on the sample clip the detector runs on 16 percent of frames and OCR three times
 
 ## Jetson Nano Docker workflow
 
-Run these commands on the Nano after installing JetPack 4.6.1 (L4T R32.7.1), Docker and the
-NVIDIA container runtime:
+Run these commands on the Nano after installing JetPack 4.6.1-4.6.6 (L4T R32.7.x), Docker and
+the NVIDIA container runtime. The tested field device reports R32.7.6; the container uses
+NVIDIA's latest published R32.7 L4T ML image, `r32.7.1-py3`:
 
 ```sh
 make jetson-all
