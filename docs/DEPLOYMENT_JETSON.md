@@ -10,15 +10,16 @@ This path targets the original NVIDIA Jetson Nano Developer Kit, not Orin:
 | Container | `nvcr.io/nvidia/l4t-ml:r32.7.1-py3` pinned by manifest digest |
 | Control Python | CPython 3.9.25, source SHA-256 pinned; benchmark/preflight only |
 | CUDA worker Python | JetPack Python 3.6 / NVIDIA PyTorch 1.10.0 / torchvision 0.11.0 |
-| OpenCV / NumPy | OpenCV 4.5.0 / NumPy 1.19.5 from the L4T image |
+| OpenCV / NumPy / scikit-image | OpenCV 4.5.0 / NumPy 1.19.5 from L4T; Ubuntu arm64 scikit-image 0.13.1 |
 | Project detector | Native TensorRT 8.2, CUDA, FP16, serialized engine cache |
 | Native ONNX Runtime | Microsoft aarch64 CPU package 1.11.1, SHA-256 checked |
 | EasyOCR | 1.6.2, recognition-only, English G2 model, SHA-256 checked |
 
 The container intentionally does not upgrade CUDA, TensorRT, PyTorch, torchvision, OpenCV,
-NumPy, SciPy or scikit-image. Those packages are ABI-coupled to the old JetPack image. Python
-3.9.25 controls the benchmark; GPU OCR stays in a separate Python 3.6 process so NVIDIA's
-JetPack wheel remains usable.
+NumPy or SciPy. Those packages are ABI-coupled to the old JetPack image. EasyOCR's required
+`skimage` module is supplied by Ubuntu's prebuilt Python 3.6 arm64 package instead of being
+compiled or resolved by pip. Python 3.9.25 controls the benchmark; GPU OCR stays in a separate
+Python 3.6 process so NVIDIA's JetPack wheel remains usable.
 
 CUDA, cuDNN and TensorRT are not installed in the image. On JetPack 4 the NVIDIA container runtime
 mounts the host's copies read-only into every container (libraries, headers and `nvcc`, as listed

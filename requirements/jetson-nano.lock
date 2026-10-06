@@ -3,7 +3,8 @@
 #
 # The base image (pinned by digest in Dockerfile.jetson-nano) supplies the ABI-sensitive stack:
 # Python 3.6, CUDA 10.2, PyTorch 1.10.0, torchvision 0.11.0, OpenCV 4.5.0,
-# NumPy 1.19.5, SciPy 1.5.4 and scikit-image. Do not upgrade those packages with pip.
+# NumPy 1.19.5 and SciPy 1.5.4. Ubuntu's prebuilt python3-skimage 0.13.1 package is installed
+# separately by the Dockerfile. Do not upgrade those packages with pip.
 # EasyOCR is installed without dependencies so it cannot replace NVIDIA PyTorch or OpenCV.
 dataclasses==0.8 \
     --hash=sha256:0201d89fa866f68c8ebd9d08ee6ff50c0b255f8ec63a71c16fda7af82bb887bf

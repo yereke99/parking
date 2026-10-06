@@ -16,6 +16,7 @@ EXPECTED = {
     "worker_python_prefix": "3.6.",
     "numpy": "1.19.5",
     "scipy": "1.5.4",
+    "skimage": "0.13.1",
     "pillow": "8.4.0",
     "pyyaml": "5.4.1",
     "torch_prefix": "1.10.0",
@@ -53,11 +54,11 @@ def main():
 
     worker_probe = r'''
 import json, platform
-import cv2, easyocr, numpy, scipy, torch, torchvision, tensorrt, yaml
+import cv2, easyocr, numpy, scipy, skimage, torch, torchvision, tensorrt, yaml
 from PIL import __version__ as pillow_version
 print(json.dumps({
     "python": platform.python_version(),
-    "numpy": numpy.__version__, "scipy": scipy.__version__,
+    "numpy": numpy.__version__, "scipy": scipy.__version__, "skimage": skimage.__version__,
     "pillow": pillow_version, "pyyaml": yaml.__version__,
     "opencv": cv2.__version__,
     "opencv_cuda_devices": cv2.cuda.getCudaEnabledDeviceCount() if hasattr(cv2, "cuda") else 0,
@@ -79,6 +80,7 @@ print(json.dumps({
             worker["python"].startswith(EXPECTED["worker_python_prefix"])
             and worker["numpy"] == EXPECTED["numpy"]
             and worker["scipy"] == EXPECTED["scipy"]
+            and worker["skimage"] == EXPECTED["skimage"]
             and worker["pillow"] == EXPECTED["pillow"]
             and worker["pyyaml"] == EXPECTED["pyyaml"]
             and worker["opencv"].startswith("4.5.")

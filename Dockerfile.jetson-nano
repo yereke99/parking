@@ -78,7 +78,7 @@ ARG PIP_SHA256=deaf32dcd9ab821e359cd8330786bcd077604b5c5730c0b096eda46f95c24a2d
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         ca-certificates curl libbz2-1.0 libffi6 libgomp1 liblzma5 libreadline7 libsqlite3-0 \
-        libssl1.1 libuuid1 procps python3-pip unzip zlib1g \
+        libssl1.1 libuuid1 procps python3-pip python3-skimage unzip zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
@@ -92,7 +92,8 @@ RUN python3 -m pip download --no-deps --index-url https://pypi.org/simple --dest
     && rm /tmp/pip-21.3.1-py3-none-any.whl \
     && python3 -m pip install --no-cache-dir --no-deps --require-hashes --ignore-installed \
         -r /tmp/jetson-nano.lock \
-    && rm /tmp/jetson-nano.lock
+    && rm /tmp/jetson-nano.lock \
+    && python3 -c 'import easyocr, skimage; assert easyocr.__version__ == "1.6.2"; assert skimage.__version__ == "0.13.1"'
 
 # Recognition-only EasyOCR needs only the 14 MB English recognizer, not the large CRAFT detector.
 # The hash is checked at image build and runtime downloads remain disabled.
