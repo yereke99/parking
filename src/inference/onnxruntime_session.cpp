@@ -2,12 +2,12 @@
 
 #include <algorithm>
 #include <array>
-#include <filesystem>
 #include <stdexcept>
 #include <unordered_map>
 
 #include <onnxruntime_cxx_api.h>
 
+#include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
 
 namespace anpr {
@@ -126,7 +126,7 @@ private:
                 guard(trt, Ort::GetApi().ReleaseTensorRTProviderOptions);
 
             std::error_code ignored;
-            std::filesystem::create_directories(config.engine_cache_dir, ignored);
+            filesystem::create_directories(config.engine_cache_dir, ignored);
 
             const std::string device_id = std::to_string(config.device_id);
             const std::string fp16 = config.fp16 ? "1" : "0";

@@ -1,11 +1,12 @@
 #include "anpr/inference/opencv_dnn_session.hpp"
 
 #include <algorithm>
-#include <filesystem>
 #include <stdexcept>
 
 #include <opencv2/core.hpp>
 #include <opencv2/dnn.hpp>
+
+#include "anpr/common/filesystem.hpp"
 
 namespace anpr {
 namespace {
@@ -125,7 +126,7 @@ std::unique_ptr<IInferenceSession> createOpenCvDnnSession(const SessionRequest& 
             "with ONNX Runtime";
         return nullptr;
     }
-    if (!std::filesystem::exists(request.model_path)) {
+    if (!filesystem::exists(request.model_path)) {
         error = "model not found: " + request.model_path;
         return nullptr;
     }

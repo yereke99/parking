@@ -4,10 +4,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <thread>
-#include <filesystem>
 
 #include <opencv2/videoio.hpp>
 
+#include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
 
 namespace anpr {
@@ -197,7 +197,7 @@ std::unique_ptr<CameraSource> makeCameraSource(const CameraConfig& config, std::
         }
     }
 
-    if (kind == CameraKind::kFile && !std::filesystem::exists(config.source)) {
+    if (kind == CameraKind::kFile && !filesystem::exists(config.source)) {
         error = "CAMERA_UNAVAILABLE: video file not found: " + config.source;
         return nullptr;
     }

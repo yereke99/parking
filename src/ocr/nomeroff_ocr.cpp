@@ -5,7 +5,6 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <poll.h>
@@ -20,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
 
 namespace anpr {
@@ -75,12 +75,12 @@ public:
         static std::once_flag sigpipe_once;
         std::call_once(sigpipe_once, [] { std::signal(SIGPIPE, SIG_IGN); });
 
-        if (!std::filesystem::exists(config_.python_executable)) {
+        if (!filesystem::exists(config_.python_executable)) {
             error = "NOMEROFF_UNAVAILABLE: Python executable not found: " +
                     config_.python_executable + ". Run tools/setup_nomeroff_env.sh";
             return false;
         }
-        if (!std::filesystem::exists(config_.worker_script)) {
+        if (!filesystem::exists(config_.worker_script)) {
             error = "NOMEROFF_UNAVAILABLE: worker script not found: " + config_.worker_script;
             return false;
         }

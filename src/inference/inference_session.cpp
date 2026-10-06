@@ -1,9 +1,9 @@
 #include "anpr/inference/inference_session.hpp"
 
 #include <algorithm>
-#include <filesystem>
 #include <numeric>
 
+#include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
 #include "anpr/inference/opencv_dnn_session.hpp"
 
@@ -90,7 +90,7 @@ std::size_t IInferenceSession::findOutput(const std::string& name) const {
 
 std::unique_ptr<IInferenceSession> createInferenceSession(const SessionRequest& request,
                                                           std::string& error) {
-    if (!std::filesystem::exists(request.model_path)) {
+    if (!filesystem::exists(request.model_path)) {
         error = "MODEL_NOT_FOUND: " + request.model_path;
         return nullptr;
     }

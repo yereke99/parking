@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <filesystem>
 #include <sstream>
 
 #include <opencv2/imgcodecs.hpp>
@@ -12,6 +11,7 @@
 #include <opencv2/highgui.hpp>
 #endif
 
+#include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
 #include "anpr/ocr/plate_ocr.hpp"
 
@@ -407,12 +407,12 @@ std::optional<std::string> AnprPipeline::saveDebugCrop(const cv::Mat& crop, std:
         return std::nullopt;
     }
     std::error_code ignored;
-    const std::filesystem::path directory = std::filesystem::path(config_.debug.output_dir) / "crops";
-    std::filesystem::create_directories(directory, ignored);
+    const filesystem::path directory = filesystem::path(config_.debug.output_dir) / "crops";
+    filesystem::create_directories(directory, ignored);
 
     std::ostringstream name;
     name << config_.camera.camera_id << '_' << now_ms << '_' << index << ".jpg";
-    const std::filesystem::path path = directory / name.str();
+    const filesystem::path path = directory / name.str();
     if (!cv::imwrite(path.string(), crop)) {
         return std::nullopt;
     }
@@ -420,8 +420,8 @@ std::optional<std::string> AnprPipeline::saveDebugCrop(const cv::Mat& crop, std:
     // Bounded storage: prune the oldest files once the cap is exceeded, so a camera left running
     // for weeks cannot fill the device.
     if (++saved_crop_count_ > config_.debug.max_files) {
-        std::vector<std::filesystem::directory_entry> files;
-        for (const auto& entry : std::filesystem::directory_iterator(directory, ignored)) {
+        std::vector<filesystem::directory_entry> files;
+        for (const auto& entry : filesystem::directory_iterator(directory, ignored)) {
             if (entry.is_regular_file(ignored)) {
                 files.push_back(entry);
             }
@@ -434,7 +434,7 @@ std::optional<std::string> AnprPipeline::saveDebugCrop(const cv::Mat& crop, std:
             const std::size_t remove_count =
                 files.size() - static_cast<std::size_t>(config_.debug.max_files);
             for (std::size_t i = 0; i < remove_count; ++i) {
-                std::filesystem::remove(files[i].path(), ignored);
+                filesystem::remove(files[i].path(), ignored);
             }
         }
         saved_crop_count_ = 0;

@@ -8,13 +8,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
-#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "anpr/common/filesystem.hpp"
 
 namespace anpr {
 namespace {
@@ -70,7 +71,7 @@ std::vector<std::int64_t> shapeOf(const nvinfer1::Dims& dims) {
 }
 
 std::string cacheName(const SessionRequest& request) {
-    const std::filesystem::path model(request.model_path);
+    const filesystem::path model(request.model_path);
     std::ifstream input(model, std::ios::binary);
     if (!input) throw std::runtime_error("cannot read TensorRT ONNX model " + model.string());
     std::uint64_t fingerprint = 14695981039346656037ULL;
@@ -92,7 +93,7 @@ std::string cacheName(const SessionRequest& request) {
            (request.inference.fp16 ? ".fp16.engine" : ".fp32.engine");
 }
 
-std::vector<char> readFile(const std::filesystem::path& path) {
+std::vector<char> readFile(const filesystem::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) return {};
     const std::streamsize size = input.tellg();
@@ -103,13 +104,13 @@ std::vector<char> readFile(const std::filesystem::path& path) {
     return bytes;
 }
 
-void writeFile(const std::filesystem::path& path, const void* data, std::size_t size) {
+void writeFile(const filesystem::path& path, const void* data, std::size_t size) {
     std::error_code error;
-    std::filesystem::create_directories(path.parent_path(), error);
+    filesystem::create_directories(path.parent_path(), error);
     if (error) {
         throw std::runtime_error("cannot create TensorRT cache directory: " + error.message());
     }
-    const std::filesystem::path temporary = path.string() + ".tmp";
+    const filesystem::path temporary = path.string() + ".tmp";
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output || !output.write(static_cast<const char*>(data),
@@ -117,9 +118,9 @@ void writeFile(const std::filesystem::path& path, const void* data, std::size_t 
             throw std::runtime_error("cannot write TensorRT engine cache " + temporary.string());
         }
     }
-    std::filesystem::rename(temporary, path, error);
+    filesystem::rename(temporary, path, error);
     if (error) {
-        std::filesystem::remove(temporary);
+        filesystem::remove(temporary);
         throw std::runtime_error("cannot publish TensorRT engine cache: " + error.message());
     }
 }
@@ -139,8 +140,8 @@ public:
                 throw std::runtime_error("TensorRT could not create an inference runtime");
             }
 
-            const std::filesystem::path cache =
-                std::filesystem::path(request.inference.engine_cache_dir) / cacheName(request);
+            const filesystem::path cache =
+                filesystem::path(request.inference.engine_cache_dir) / cacheName(request);
             const std::vector<char> cached = readFile(cache);
             if (!cached.empty()) {
                 engine_.reset(runtime_->deserializeCudaEngine(cached.data(), cached.size()));
@@ -235,7 +236,7 @@ private:
     std::vector<std::vector<float>> output_buffers_;
     std::vector<void*> device_buffers_;
 
-    void build(const SessionRequest& request, const std::filesystem::path& cache) {
+    void build(const SessionRequest& request, const filesystem::path& cache) {
         TrtPtr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(logger_));
         if (!builder) throw std::runtime_error("TensorRT could not create a builder");
         const std::uint32_t explicit_batch =

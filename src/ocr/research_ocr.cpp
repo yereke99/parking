@@ -5,7 +5,6 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <poll.h>
@@ -19,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
 
 namespace anpr {
@@ -79,12 +79,12 @@ public:
         std::call_once(sigpipe_once, [] { std::signal(SIGPIPE, SIG_IGN); });
 
         const std::string python = pythonExecutable(config_);
-        if (!std::filesystem::exists(python)) {
+        if (!filesystem::exists(python)) {
             error = "OCR_BACKEND_UNAVAILABLE: Python executable not found: " + python +
                     ". Run tools/setup_research_ocr_envs.sh";
             return false;
         }
-        if (!std::filesystem::exists(config_.research_worker_script)) {
+        if (!filesystem::exists(config_.research_worker_script)) {
             error = "OCR_BACKEND_UNAVAILABLE: worker script not found: " +
                     config_.research_worker_script;
             return false;
