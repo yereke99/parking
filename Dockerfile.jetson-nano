@@ -37,6 +37,7 @@ RUN apt-get update \
         build-essential cmake pkg-config \
         cuda-cudart-dev-10-2=10.2.300-1 \
         libnvinfer-dev=8.2.1-1+cuda10.2 \
+        libnvinfer-plugin-dev=8.2.1-1+cuda10.2 \
         libnvonnxparsers-dev=8.2.1-1+cuda10.2 \
         libbz2-dev libffi-dev liblzma-dev libreadline-dev libsqlite3-dev libssl-dev \
         uuid-dev zlib1g-dev \
@@ -100,6 +101,7 @@ RUN apt-get update \
         ca-certificates curl libbz2-1.0 libffi6 libgomp1 liblzma5 libreadline7 libsqlite3-0 \
         cuda-cudart-10-2=10.2.300-1 \
         libnvinfer8=8.2.1-1+cuda10.2 \
+        libnvinfer-plugin8=8.2.1-1+cuda10.2 \
         libnvonnxparsers8=8.2.1-1+cuda10.2 \
         libssl1.1 libuuid1 procps python3-pip unzip zlib1g \
     && rm -rf /var/lib/apt/lists/*

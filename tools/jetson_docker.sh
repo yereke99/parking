@@ -39,6 +39,14 @@ if [[ "$(uname -m)" != "aarch64" ]]; then
     exit 3
 fi
 if [[ "$action" == "build" ]]; then
+    default_runtime="$("$docker_bin" info --format '{{.DefaultRuntime}}' 2>/dev/null || true)"
+    if [[ "$default_runtime" != "nvidia" ]]; then
+        echo "ERROR: Docker's default runtime must be nvidia while building on JetPack 4." >&2
+        echo "TensorRT links against Jetson driver libraries that NVIDIA mounts into containers." >&2
+        echo "Set \"default-runtime\": \"nvidia\" in /etc/docker/daemon.json, restart Docker," >&2
+        echo "and verify: docker info --format '{{.DefaultRuntime}}'" >&2
+        exit 3
+    fi
     exec "$docker_bin" build --file Dockerfile.jetson-nano --tag "$image" .
 fi
 if ! "$docker_bin" info --format '{{json .Runtimes}}' | grep -q 'nvidia'; then
