@@ -68,6 +68,37 @@ RUN mkdir -p /tmp/build \
     && cmake --build . -- -j1 \
     && ctest --output-on-failure
 
+# scikit-image 0.17.2 is the last Python 3.6 release. Bionic's 0.13.1 imports NumPy's
+# removed _validate_lengths function, and PyPI has no cp36/aarch64 wheel for 0.17.2.
+# Build a wheel against the SAME L4T NumPy as runtime, without pip dependency resolution
+# or build isolation (which would install a different NumPy). Keep compilers out of runtime.
+FROM ${L4T_ML_IMAGE} AS ocr-builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG SKIMAGE_SHA256=bd954c0588f0f7e81d9763dc95e06950e68247d540476e06cb77bcbcd8c2d8b3
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        build-essential ca-certificates curl python3-dev python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
+COPY requirements/jetson-nano-build.lock /tmp/jetson-nano-build.lock
+RUN /usr/bin/python3 -m pip install --no-cache-dir --no-deps --require-hashes \
+        --only-binary=:all: --ignore-installed -r /tmp/jetson-nano-build.lock \
+    && /usr/bin/python3 -c 'import numpy; assert numpy.__version__ == "1.19.5"' \
+    && fetch-verified \
+        https://files.pythonhosted.org/packages/source/s/scikit-image/scikit-image-0.17.2.tar.gz \
+        "${SKIMAGE_SHA256}" /tmp/scikit-image.tar.gz \
+    && mkdir -p /tmp/scikit-image /opt/ocr-wheels \
+    && tar -xzf /tmp/scikit-image.tar.gz -C /tmp/scikit-image --strip-components=1
+
+# Upstream 0.17.2 uses multiprocessing.cpu_count() for Cython regardless of build_ext's
+# parallel setting. Limit both Cython and C compilation to one job on the 4 GB Nano.
+WORKDIR /tmp/scikit-image
+RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 NPY_NUM_BUILD_JOBS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+    /usr/bin/python3 -c 'import multiprocessing, runpy, sys; multiprocessing.cpu_count = lambda: 1; sys.argv = ["setup.py", "build_ext", "--parallel=1", "bdist_wheel", "--dist-dir=/opt/ocr-wheels"]; runpy.run_path("setup.py", run_name="__main__")'
+
 FROM ${L4T_ML_IMAGE} AS runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -78,11 +109,12 @@ ARG PIP_SHA256=deaf32dcd9ab821e359cd8330786bcd077604b5c5730c0b096eda46f95c24a2d
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         ca-certificates curl libbz2-1.0 libffi6 libgomp1 liblzma5 libreadline7 libsqlite3-0 \
-        libssl1.1 libuuid1 procps python3-pip python3-skimage unzip zlib1g \
+        libssl1.1 libuuid1 procps python3-pip unzip zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
 COPY requirements/jetson-nano.lock /tmp/jetson-nano.lock
+COPY --from=ocr-builder /opt/ocr-wheels/ /tmp/ocr-wheels/
 # The base image's Debian python3-yaml (pulled in by llvm-9-dev) is a distutils install that
 # upstream pip cannot uninstall. Install the pinned set alongside the Debian copies instead:
 # /usr/local/lib/python3.6/dist-packages precedes /usr/lib/python3/dist-packages on sys.path.
@@ -92,8 +124,11 @@ RUN python3 -m pip download --no-deps --index-url https://pypi.org/simple --dest
     && rm /tmp/pip-21.3.1-py3-none-any.whl \
     && python3 -m pip install --no-cache-dir --no-deps --require-hashes --ignore-installed \
         -r /tmp/jetson-nano.lock \
+    && python3 -m pip install --no-cache-dir --no-deps --no-index --ignore-installed \
+        /tmp/ocr-wheels/scikit_image-0.17.2-*.whl \
     && rm /tmp/jetson-nano.lock \
-    && python3 -c 'import easyocr, skimage; assert easyocr.__version__ == "1.6.2"; assert skimage.__version__ == "0.13.1"'
+    && rm -rf /tmp/ocr-wheels \
+    && python3 -c 'import easyocr, numpy, scipy, skimage; from skimage import io; from skimage.util import crop; assert easyocr.__version__ == "1.6.2"; assert skimage.__version__ == "0.17.2"; assert numpy.__version__ == "1.19.5"; assert scipy.__version__ == "1.5.4"; assert crop(numpy.zeros((4, 4)), 1).shape == (2, 2)'
 
 # Recognition-only EasyOCR needs only the 14 MB English recognizer, not the large CRAFT detector.
 # The hash is checked at image build and runtime downloads remain disabled.
@@ -120,6 +155,12 @@ ENV LD_LIBRARY_PATH=/opt/onnxruntime/lib:${LD_LIBRARY_PATH} \
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
     MKL_NUM_THREADS=1
+
+# Load the bundled recognizer and run the worker's warmup on CPU during the build.
+# --serve disables downloads and EOF exits after READY; GPU validation remains in preflight.
+RUN /usr/bin/python3 /opt/kz-anpr/tools/research_ocr_worker.py \
+    --serve --engine easyocr --device cpu \
+    --model-cache /opt/kz-anpr/models/research </dev/null
 
 WORKDIR /workspace
 CMD ["/opt/python3.9/bin/python3.9", "/opt/kz-anpr/tools/jetson_preflight.py"]

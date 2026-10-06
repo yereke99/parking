@@ -6,6 +6,7 @@
 !include/
 !models/plate_ocr_config.yaml
 !requirements/jetson-nano.lock
+!requirements/jetson-nano-build.lock
 !src/
 !tests/
 !tools/

@@ -3,23 +3,38 @@
 #
 # The base image (pinned by digest in Dockerfile.jetson-nano) supplies the ABI-sensitive stack:
 # Python 3.6, CUDA 10.2, PyTorch 1.10.0, torchvision 0.11.0, OpenCV 4.5.0,
-# NumPy 1.19.5 and SciPy 1.5.4. Ubuntu's prebuilt python3-skimage 0.13.1 package is installed
-# separately by the Dockerfile. Do not upgrade those packages with pip.
+# NumPy 1.19.5 and SciPy 1.5.4. scikit-image 0.17.2 is built separately against that NumPy
+# by the Dockerfile. Do not upgrade those packages with pip.
 # EasyOCR is installed without dependencies so it cannot replace NVIDIA PyTorch or OpenCV.
+# Include scikit-image's Python 3.6-compatible dependencies explicitly for --no-deps.
 dataclasses==0.8 \
     --hash=sha256:0201d89fa866f68c8ebd9d08ee6ff50c0b255f8ec63a71c16fda7af82bb887bf
+decorator==4.4.2 \
+    --hash=sha256:41fa54c2a0cc4ba648be4fd43cff00aedf5b9465c9bf18d64325bc225f08f760
 easyocr==1.6.2 \
     --hash=sha256:c47015beb56c147b2712af3c9d8cc677691ebad42560257e6e145411773c66c3
+imageio==2.9.0 \
+    --hash=sha256:3604d751f03002e8e0e7650aa71d8d9148144a87daf17cb1f3228e80747f2e6b
 importlib-metadata==4.8.3 \
     --hash=sha256:65a9576a5b2d58ca44d133c42a241905cc45e34d2c06fd5ba2bafa221e5d7b5e
+networkx==2.5.1 \
+    --hash=sha256:0635858ed7e989f4c574c2328380b452df892ae85084144c73d8cd819f0c4e06
+packaging==21.3 \
+    --hash=sha256:ef103e05f519cdc783ae24ea4e2e0f508a9c99b2d4969652eed6a2e1ea5bd522
 Pillow==8.4.0 \
     --hash=sha256:72cbcfd54df6caf85cc35264c77ede902452d6df41166010262374155947460c
 python-bidi==0.4.2 \
     --hash=sha256:50eef6f6a0bbdd685f9e8c207f3c9050f5b578d0a46e37c76a9c4baea2cc2e13
+pyparsing==2.4.7 \
+    --hash=sha256:ef9d7589ef3c200abe66653d3f1ab1033c3c419ae9b9bdb1240a85b024efc88b
+PyWavelets==1.1.1 \
+    --hash=sha256:c2a799e79cee81a862216c47e5623c97b95f1abee8dd1f9eed736df23fb653fb
 PyYAML==5.4.1 \
     --hash=sha256:72a01f726a9c7851ca9bfad6fd09ca4e090a023c00945ea05ba1638c09dc3347
 six==1.16.0 \
     --hash=sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254
+tifffile==2020.9.3 \
+    --hash=sha256:e7c03c5827def91bec6e353e728f4bd02f35f08b142cd520f66b21f31ff4402b
 typing-extensions==4.1.1 \
     --hash=sha256:21c85e0fe4b9a155d0799430b0ad741cdce7e359660ccbd8b530613e8df88ce2
 zipp==3.6.0 \

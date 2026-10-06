@@ -16,7 +16,7 @@ EXPECTED = {
     "worker_python_prefix": "3.6.",
     "numpy": "1.19.5",
     "scipy": "1.5.4",
-    "skimage": "0.13.1",
+    "skimage": "0.17.2",
     "pillow": "8.4.0",
     "pyyaml": "5.4.1",
     "torch_prefix": "1.10.0",
