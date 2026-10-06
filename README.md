@@ -43,9 +43,9 @@ make run
 ```
 
 `make benchmark-1` and `make benchmark-4` run only the selected stream count. For a short smoke
-test, use `make jetson-all MAX_FRAMES=300`. Source, videos, manifests and models are mounted from the existing
-checkout; results are written to `benchmark_results/`. The host is not modified by pip, CMake or
-CUDA installers.
+test, use `make jetson-all MAX_FRAMES=300`. Source, videos, manifests and models are mounted from
+the existing checkout; results are written to `benchmark_results/`. The host is not modified by
+pip, CMake or CUDA installers.
 
 The image is pinned to NVIDIA's L4T ML R32.7.1 ARM64 image (CUDA 10.2, PyTorch 1.10, OpenCV 4.5)
 and builds pinned Python 3.9.25 with one compiler job to stay inside 4 GB RAM. The project detector
@@ -82,8 +82,9 @@ cmake --build build-core -j
 ./build-core/kz_anpr_core_tests
 ```
 
-The C++ runtime needs OpenCV and ONNX Runtime for the existing detector. Nomeroff is installed in
-its own environment and does not modify system Python:
+The portable C++ runtime uses OpenCV and ONNX Runtime; the Jetson Docker build additionally links
+the native TensorRT backend described above. Nomeroff is installed in its own environment and does
+not modify system Python:
 
 ```sh
 # Debian, Ubuntu, JetPack
