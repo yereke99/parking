@@ -20,6 +20,11 @@ NumPy, SciPy or scikit-image. Those packages are ABI-coupled to the old JetPack 
 3.9.25 controls the benchmark; GPU OCR stays in a separate Python 3.6 process so NVIDIA's
 JetPack wheel remains usable.
 
+The archived L4T ML image omits NVIDIA's APT source configuration. During the image build only,
+the Dockerfile registers NVIDIA's official `common` and `t210` R32.7 repositories using a
+SHA-256-pinned signing key, then installs exact CUDA 10.2/TensorRT 8.2.1 development package
+versions. The Jetson host remains unchanged.
+
 Python 3.9 reached upstream end-of-life on October 31, 2025. Version 3.9.25 is the final release
 and is pinned here because this deployment explicitly requires 3.9; it should not be interpreted
 as a currently supported general-purpose Python baseline.

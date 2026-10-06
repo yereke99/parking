@@ -10,10 +10,31 @@ ARG ONNXRUNTIME_VERSION=1.11.1
 ARG ONNXRUNTIME_SHA256=bb9ca658a6a0acc7b9e4288647277a9ce9d86b063a2403a51d5c0d2e4df43603
 ARG PYTHON_VERSION=3.9.25
 ARG PYTHON_SHA256=00e07d7c0f2f0cc002432d1ee84d2a40dae404a99303e3f97701c10966c91834
+ARG JETSON_APT_KEY_SHA256=576f852981855e5c6cfb9b625ffb51b984ca451f1181b2e70435b005034fad55
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
-        build-essential ca-certificates cmake curl pkg-config \
+        ca-certificates curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# The archived L4T ML image does not carry NVIDIA's APT source even though its packages depend on
+# that repository. Register the official R32.7 common/T210 repositories with a pinned signing key
+# before asking apt for CUDA/TensorRT development headers. Nothing is installed on the host.
+RUN curl -L --fail --retry 3 \
+        https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
+        -o /tmp/jetson-ota-public.asc \
+    && echo "${JETSON_APT_KEY_SHA256}  /tmp/jetson-ota-public.asc" | sha256sum -c - \
+    && gpg --dearmor < /tmp/jetson-ota-public.asc \
+        > /usr/share/keyrings/nvidia-jetson.gpg \
+    && printf '%s\n' \
+        'deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] https://repo.download.nvidia.com/jetson/common r32.7 main' \
+        'deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] https://repo.download.nvidia.com/jetson/t210 r32.7 main' \
+        > /etc/apt/sources.list.d/nvidia-jetson-r32.list \
+    && rm /tmp/jetson-ota-public.asc
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        build-essential cmake pkg-config \
         cuda-cudart-dev-10-2=10.2.300-1 \
         libnvinfer-dev=8.2.1-1+cuda10.2 \
         libnvonnxparsers-dev=8.2.1-1+cuda10.2 \
@@ -68,6 +89,11 @@ FROM ${L4T_ML_IMAGE} AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 ARG EASYOCR_MODEL_SHA256=1b5eaebf1c062de6205560c97ffcfa8dc0e6f413c340e8adc5cfc57e159f61ff
 ARG PIP_SHA256=deaf32dcd9ab821e359cd8330786bcd077604b5c5730c0b096eda46f95c24a2d
+
+COPY --from=builder /usr/share/keyrings/nvidia-jetson.gpg \
+    /usr/share/keyrings/nvidia-jetson.gpg
+COPY --from=builder /etc/apt/sources.list.d/nvidia-jetson-r32.list \
+    /etc/apt/sources.list.d/nvidia-jetson-r32.list
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
