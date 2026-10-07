@@ -99,7 +99,7 @@ print(json.dumps({
 
     required = [
         ROOT / "models/license_plate_detector.onnx",
-        ROOT / "models/plate_ocr.onnx",
+        Path("/opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx"),
         ROOT / "models/plate_ocr_config.yaml",
         ROOT / "data/manifests/video_research.csv",
         ROOT / "video/car.mp4",

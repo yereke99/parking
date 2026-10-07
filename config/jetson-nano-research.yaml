@@ -50,7 +50,8 @@ ocr:
   easyocr_python_executable: /usr/bin/python3
   easyocr_languages: en
   easyocr_onnx_dir: /opt/kz-anpr/models/easyocr-onnx
-  model: models/plate_ocr.onnx
+  # Downloaded and SHA-256 checked by the image build.
+  model: /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx
   plate_config: models/plate_ocr_config.yaml
   min_confidence: 0.40
   min_char_confidence: 0.20

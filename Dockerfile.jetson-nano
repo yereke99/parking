@@ -116,6 +116,7 @@ FROM ${L4T_ML_IMAGE} AS runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG EASYOCR_MODEL_SHA256=1b5eaebf1c062de6205560c97ffcfa8dc0e6f413c340e8adc5cfc57e159f61ff
+ARG FAST_PLATE_OCR_SHA256=384bbbd2cea3ef54761d3df70822ef3a349ee1a112aeafddbe0e3ba06bc6e47b
 ARG PIP_SHA256=deaf32dcd9ab821e359cd8330786bcd077604b5c5730c0b096eda46f95c24a2d
 
 # Ubuntu packages only: CUDA, cuDNN and TensorRT come from the host at run time (see the top).
@@ -160,6 +161,13 @@ RUN mkdir -p /opt/kz-anpr/models/research/easyocr \
         "${EASYOCR_MODEL_SHA256}" /tmp/english_g2.zip \
     && unzip -q /tmp/english_g2.zip -d /opt/kz-anpr/models/research/easyocr \
     && rm /tmp/english_g2.zip
+
+# Fast Plate OCR's cct-s-v2-global model, the pair of models/plate_ocr_config.yaml. Downloaded into
+# the image so the Jetson needs no hand-copied models/plate_ocr.onnx.
+RUN mkdir -p /opt/kz-anpr/models/fast-plate-ocr \
+    && fetch-verified \
+        https://github.com/ankandrew/fast-plate-ocr/releases/download/arg-plates/cct_s_v2_global.onnx \
+        "${FAST_PLATE_OCR_SHA256}" /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx
 
 # The `easyocr_onnx` backend runs the same recognizer inside the C++ process on TensorRT, without
 # a PyTorch worker. Export it from the verified weights with this image's PyTorch 1.10.

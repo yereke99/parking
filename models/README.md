@@ -11,6 +11,7 @@ explicitly approved. `.gitignore` excludes `*.onnx`, `*.engine`, `*.plan` and `m
 | `plate_ocr.onnx` | Fast Plate OCR `cct-s-v2-global` |
 | `plate_ocr_config.yaml` | the OCR model's contract, read at startup |
 | `trt_cache/` | serialised TensorRT engines, generated on the device |
+| `/opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx` | the `plate_ocr.onnx` model, downloaded and SHA-256 checked by the Jetson image build |
 | `easyocr-onnx/english_g2_<width>.onnx` | EasyOCR recognizer per input width, exported by `tools/export_easyocr_onnx.py` (inside the Jetson image at `/opt/kz-anpr/models/easyocr-onnx`) |
 
 `../license_plate_detector.pt` is the Ultralytics checkpoint kept from the prototype. The C++
