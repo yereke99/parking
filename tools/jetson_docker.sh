@@ -122,6 +122,14 @@ if [[ "$action" == "check" ]]; then
         /opt/python3.9/bin/python3.9 /opt/kz-anpr/tools/jetson_preflight.py
 fi
 
+if [[ "$action" == "run" && "${PROJECT_OCR:-easyocr}" == "easyocr_onnx" ]] &&
+   ! "$docker_bin" run --rm --entrypoint /bin/sh "$image" \
+       -c 'test -f /opt/kz-anpr/models/easyocr-onnx/english_g2_320.onnx' >/dev/null 2>&1; then
+    echo "ERROR: image $image predates the easyocr_onnx OCR in this checkout." >&2
+    echo "Rebuild it first: make docker-build" >&2
+    exit 3
+fi
+
 if [[ "$action" == "run" ]]; then
     # The project must start even when CUDA OCR cannot: give the CUDA worker this long, then serve
     # the same EasyOCR model on CPU and log the reason (research_ocr_ready fallback=...).
