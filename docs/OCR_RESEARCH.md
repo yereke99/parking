@@ -17,6 +17,7 @@ then character error rate (CER), then four-camera OCR p95 latency and peak memor
 | --- | --- | --- |
 | `fast_plate_ocr` | Native C++ and ONNX Runtime | Small, fast global-plate baseline; existing implementation is unchanged |
 | `nomeroff` | Persistent Python/PyTorch worker, explicit KZ model | Regional production candidate |
+| `nomeroff_onnx` | The same KZ model exported to ONNX, native C++ on TensorRT/ONNX Runtime | Nomeroff on JetPack 4, where the worker cannot run; `--ocr-benchmark` row |
 | `paddleocr` | Persistent recognition-only worker, `eslav_PP-OCRv5_mobile_rec`, ONNX Runtime | Best general OCR comparison from the earlier crop study |
 | `easyocr` | Persistent recognition-only PyTorch worker, English recognizer | General scene-text control/baseline |
 

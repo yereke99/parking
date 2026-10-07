@@ -4,6 +4,7 @@
 #include "anpr/ocr/easyocr_onnx.hpp"
 #include "anpr/ocr/fast_plate_ocr.hpp"
 #include "anpr/ocr/nomeroff_ocr.hpp"
+#include "anpr/ocr/nomeroff_onnx.hpp"
 #include "anpr/ocr/research_ocr.hpp"
 
 namespace anpr {
@@ -19,6 +20,9 @@ std::unique_ptr<IPlateOcr> makePlateOcr(const OcrConfig& ocr,
     }
     if (ocr.backend == "easyocr_onnx") {
         return makeEasyOcrOnnx(ocr, inference, metrics, error);
+    }
+    if (ocr.backend == "nomeroff_onnx") {
+        return makeNomeroffOnnx(ocr, inference, metrics, error);
     }
     if (ocr.backend == "paddleocr" || ocr.backend == "easyocr") {
         return makeResearchOcrRecognizer(ocr, metrics, error);

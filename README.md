@@ -50,7 +50,8 @@ bundled clips in turn (`PROJECT_OCR=fast_plate_ocr make run-all` for Fast-Plate-
 clips and on every frame of each clip, and prints accuracy against the labels in
 `data/manifests/video_research.csv`, OCR and pipeline FPS, latency, RAM, startup, a ranking and the
 total time (see [OCR research](docs/OCR_RESEARCH.md)).
-`make ocr-benchmark OCR_ENGINES="easyocr_onnx fast_plate_ocr"` limits it to those engines.
+`make ocr-benchmark OCR_ENGINES="nomeroff_onnx easyocr_onnx fast_plate_ocr"` limits it to those
+engines.
 `make benchmark-1` and
 `make benchmark-4` run only the selected stream count. For a short smoke
 test, use `make jetson-all MAX_FRAMES=300`. Source, videos, manifests and models are mounted from
@@ -75,11 +76,13 @@ release requested for this legacy deployment, not an unbounded `3.9` tag.
 See [Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md) for compatibility details and preflight
 checks.
 
-`make run` starts the full project with TensorRT detection and EasyOCR (`easyocr_onnx`): the same
-recognizer exported to ONNX and run on TensorRT inside the C++ process, with no PyTorch worker.
-Both models warm up before the first frame, and a video file is processed frame by frame. The
-first run builds and caches the OCR engines. `PROJECT_OCR=easyocr make run` selects the PyTorch
-CUDA worker instead; it falls back to CPU if it is not ready within 240 s (see
+`make run` starts the full project with TensorRT detection and Nomeroff's Kazakhstan OCR
+(`nomeroff_onnx`): Nomeroff 4.0.1's `kz` model, exported to ONNX at image build and run on
+TensorRT inside the C++ process, with no PyTorch worker. Both models warm up before the first
+frame, and a video file is processed frame by frame. The first run builds and caches the OCR
+engine. `PROJECT_OCR=easyocr_onnx` or `PROJECT_OCR=fast_plate_ocr` selects another in-process
+OCR; `PROJECT_OCR=easyocr make run` selects the PyTorch CUDA worker, which falls back to CPU if it
+is not ready within 240 s (see
 [Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md)). Override the input without editing
 configuration, for example:
 

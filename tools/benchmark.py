@@ -25,6 +25,7 @@ RESEARCH_VIDEOS = ("video/car.mp4", "video/parking.mp4", "video/parking2.mp4")
 # --ocr-benchmark rows, run strictly one after another. EasyOCR has two: the in-process TensorRT
 # export and the PyTorch worker it replaces.
 OCR_BENCHMARK_ENGINES = (
+    ("nomeroff_onnx", "Nomeroff KZ (ONNX/TensorRT)"),
     ("easyocr_onnx", "EasyOCR (ONNX/TensorRT)"),
     ("easyocr", "EasyOCR (PyTorch worker)"),
     ("nomeroff", "Nomeroff-Net"),
@@ -1008,7 +1009,8 @@ def parse_args() -> argparse.Namespace:
         "--research", action="store_true",
         help="run all four OCR backends on all three bundled videos with 1 and 4 streams",
     )
-    parser.add_argument("--ocr-backend", choices=OCR_BACKENDS + ("easyocr_onnx",), default="")
+    parser.add_argument("--ocr-backend", choices=OCR_BACKENDS + ("easyocr_onnx", "nomeroff_onnx"),
+                        default="")
     parser.add_argument(
         "--ocr-benchmark", action="store_true",
         help="sequential OCR comparison: every engine on the same crops and clips, one at a time",

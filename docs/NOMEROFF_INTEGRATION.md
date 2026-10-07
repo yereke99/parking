@@ -105,6 +105,25 @@ tools/setup_nomeroff_env.sh --jetson
 The final probe downloads the configured regional model to `models/nomeroff/` and executes a
 warm-up. Copy/populate that ignored cache before deploying to an offline site.
 
+## Jetson Nano / JetPack 4: `nomeroff_onnx`
+
+Nomeroff 4.0.1 needs Python >= 3.9 and PyTorch >= 1.12; JetPack 4's CUDA stack is Python 3.6 with
+NVIDIA PyTorch 1.10, so the worker above cannot run on the Nano. The `kz` text reader alone runs
+there through ONNX instead:
+
+- `Dockerfile.jetson-nano` downloads the model card's checkpoint
+  (`https://nomeroff.net.ua/models/ocr/kz/torch/model_v3.3/anpr_ocr_kz_2022_11_14.ckpt`,
+  SHA-256 `b8d09e77dc0d212cf4a9f266e2ba2b18bd655dfcb45582195d64d647ca37ac28`).
+- `tools/export_nomeroff_onnx.py` rebuilds NPOcrNet (resnet18 trunk to layer3, linear 512, two
+  bidirectional LSTMs with hidden 32, 37-class CTC head) with PyTorch 1.10, checks the export
+  graph against a copy of Nomeroff's forward pass and writes a batch-1 ONNX model.
+- `ocr.backend: nomeroff_onnx` runs it in the C++ process (TensorRT FP32 on the Nano, ONNX Runtime
+  elsewhere) with the worker's preprocessing, greedy CTC decoding and confidence gates. Only the
+  one-line `kz` model is exported, so it requires `ocr.region_mode: kz` and `ocr.lines_count: 1`.
+
+On the 579 plate crops of the bundled clips the C++ readings equal the PyTorch model's, with
+confidences within 5e-5.
+
 ## License flag
 
 Nomeroff Net declares GNU GPL-3.0. This implementation imports and executes Nomeroff directly in

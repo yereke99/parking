@@ -144,6 +144,9 @@ struct OcrConfig {
     /// `easyocr_onnx`: the same EasyOCR recognizer exported by tools/export_easyocr_onnx.py and
     /// run in-process by the inference backend (TensorRT on the Jetson), without PyTorch.
     std::string easyocr_onnx_dir{"models/easyocr-onnx"};
+    /// `nomeroff_onnx`: Nomeroff's kz text reader exported by tools/export_nomeroff_onnx.py and
+    /// run in-process by the inference backend (TensorRT on the Jetson), without PyTorch.
+    std::string nomeroff_onnx_model{"models/nomeroff-onnx/kz.onnx"};
 
     // Legacy Fast Plate OCR settings. Kept behind `backend: fast_plate_ocr` until the labelled
     // KZ/RU comparison is complete; they are not touched by the Nomeroff hot path.

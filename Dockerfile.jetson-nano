@@ -184,6 +184,20 @@ RUN /usr/bin/python3 /opt/kz-anpr/tools/convert_fast_plate_ocr.py \
         /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx \
         /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global_float.onnx
 
+# Nomeroff Net 4.0.1's dedicated Kazakhstan OCR ("kz", model card nomeroff-net-ocr-kz/model-4.json)
+# for the default `nomeroff_onnx` backend. Nomeroff itself needs Python >= 3.9 and PyTorch >= 1.12,
+# so the small network is rebuilt and exported with this image's PyTorch 1.10 and then runs in the
+# C++ process on TensorRT. The checkpoint is only needed for the export.
+ARG NOMEROFF_KZ_SHA256=b8d09e77dc0d212cf4a9f266e2ba2b18bd655dfcb45582195d64d647ca37ac28
+COPY tools/export_nomeroff_onnx.py /opt/kz-anpr/tools/
+RUN fetch-verified \
+        https://nomeroff.net.ua/models/ocr/kz/torch/model_v3.3/anpr_ocr_kz_2022_11_14.ckpt \
+        "${NOMEROFF_KZ_SHA256}" /tmp/anpr_ocr_kz_2022_11_14.ckpt \
+    && /usr/bin/python3 /opt/kz-anpr/tools/export_nomeroff_onnx.py \
+        --checkpoint /tmp/anpr_ocr_kz_2022_11_14.ckpt \
+        --output /opt/kz-anpr/models/nomeroff-onnx/kz.onnx \
+    && rm /tmp/anpr_ocr_kz_2022_11_14.ckpt
+
 COPY --from=builder /opt/onnxruntime/lib/ /opt/onnxruntime/lib/
 COPY --from=builder /opt/python3.9/ /opt/python3.9/
 COPY --from=builder /tmp/build/kz_anpr /opt/kz-anpr/bin/kz_anpr

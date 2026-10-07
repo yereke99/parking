@@ -44,7 +44,8 @@ void usage() {
   --streams N         simulate N cameras by repeating --video (supported: 1, 2, 4)
   --config PATH       configuration file (default config/default.yaml)
   --backend B         auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
-  --ocr-backend B     fast_plate_ocr | nomeroff | paddleocr | easyocr | easyocr_onnx
+  --ocr-backend B     nomeroff_onnx | fast_plate_ocr | nomeroff | paddleocr | easyocr |
+                      easyocr_onnx
   --detector-only     time the detector on every frame, skipping the state machine and OCR
   --extract-crops DIR run the detector on every frame and save each crop that passes the
                       pipeline's ROI, size and quality gates (as OCR would receive it) to

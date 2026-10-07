@@ -123,7 +123,8 @@ if [[ "$action" == "check" ]]; then
 fi
 
 # Models built into the image at `make docker-build`; the checkout's config names them.
-case "${PROJECT_OCR:-easyocr}" in
+case "${PROJECT_OCR:-nomeroff_onnx}" in
+    nomeroff_onnx) image_model=/opt/kz-anpr/models/nomeroff-onnx/kz.onnx ;;
     easyocr_onnx) image_model=/opt/kz-anpr/models/easyocr-onnx/english_g2_320.onnx ;;
     fast_plate_ocr) image_model=/opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global_float.onnx ;;
     *) image_model="" ;;
@@ -131,7 +132,7 @@ esac
 if [[ "$action" == "run" && -n "$image_model" ]] &&
    ! "$docker_bin" run --rm --entrypoint /bin/sh "$image" \
        -c 'test -f "$1"' sh "$image_model" >/dev/null 2>&1; then
-    echo "ERROR: image $image predates the ${PROJECT_OCR} OCR in this checkout." >&2
+    echo "ERROR: image $image predates the ${PROJECT_OCR:-nomeroff_onnx} OCR in this checkout." >&2
     echo "Rebuild it first: make docker-build" >&2
     exit 3
 fi
@@ -140,7 +141,7 @@ if [[ "$action" == "run" ]]; then
     # The project must start even when CUDA OCR cannot: give the CUDA worker this long, then serve
     # the same EasyOCR model on CPU and log the reason (research_ocr_ready fallback=...).
     # Benchmarks stay strict so a CPU result is never reported as a CUDA row.
-    exec "$docker_bin" "${run_args[@]}" -e "OCR_BACKEND=${PROJECT_OCR:-easyocr}" \
+    exec "$docker_bin" "${run_args[@]}" -e "OCR_BACKEND=${PROJECT_OCR:-nomeroff_onnx}" \
         -e "KZ_ANPR_OCR_ACCELERATOR_TIMEOUT_S=${OCR_CUDA_TIMEOUT_S:-240}" "$image" \
         /opt/kz-anpr/bin/kz_anpr \
         --config /workspace/config/jetson-nano-research.yaml \

@@ -346,6 +346,7 @@ void readAll(Reader& reader, AnprConfig& config, std::string& error) {
     reader.get("ocr.easyocr_python_executable", config.ocr.easyocr_python_executable);
     reader.get("ocr.easyocr_languages", config.ocr.easyocr_languages);
     reader.get("ocr.easyocr_onnx_dir", config.ocr.easyocr_onnx_dir);
+    reader.get("ocr.nomeroff_onnx_model", config.ocr.nomeroff_onnx_model);
     reader.get("ocr.model", config.ocr.model);
     reader.get("ocr.plate_config", config.ocr.plate_config);
     reader.get("ocr.min_confidence", config.ocr.min_confidence);
@@ -616,11 +617,11 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
     if (!require(config.ocr.max_attempts > 0, "ocr.max_attempts must be positive")) {
         return false;
     }
-    if (!require(config.ocr.backend == "nomeroff" || config.ocr.backend == "fast_plate_ocr" ||
-                     config.ocr.backend == "paddleocr" || config.ocr.backend == "easyocr" ||
-                     config.ocr.backend == "easyocr_onnx",
-                 "ocr.backend must be nomeroff, fast_plate_ocr, paddleocr, easyocr or "
-                 "easyocr_onnx")) {
+    if (!require(config.ocr.backend == "nomeroff" || config.ocr.backend == "nomeroff_onnx" ||
+                     config.ocr.backend == "fast_plate_ocr" || config.ocr.backend == "paddleocr" ||
+                     config.ocr.backend == "easyocr" || config.ocr.backend == "easyocr_onnx",
+                 "ocr.backend must be nomeroff, nomeroff_onnx, fast_plate_ocr, paddleocr, "
+                 "easyocr or easyocr_onnx")) {
         return false;
     }
     if (!require(config.ocr.device == "auto" || config.ocr.device == "cpu" ||
@@ -667,6 +668,11 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
     if (config.ocr.backend == "easyocr_onnx" &&
         !require(!config.ocr.easyocr_onnx_dir.empty(),
                  "easyocr_onnx requires ocr.easyocr_onnx_dir")) {
+        return false;
+    }
+    if (config.ocr.backend == "nomeroff_onnx" &&
+        !require(!config.ocr.nomeroff_onnx_model.empty(),
+                 "nomeroff_onnx requires ocr.nomeroff_onnx_model")) {
         return false;
     }
     if (!require(config.quality.min_plate_width_px > 0 && config.quality.min_plate_height_px > 0,

@@ -140,6 +140,7 @@ row.
 | --- | --- | --- |
 | `fast_plate_ocr` | TensorRT detector, TensorRT OCR | The image gives the published uint8-input model a float32 input (`tools/convert_fast_plate_ocr.py`), which TensorRT 8.2 accepts; FP32 engine, ONNX Runtime 1.11.1 CPU fallback |
 | `easyocr` | TensorRT detector, CUDA OCR | EasyOCR 1.6.2 reuses NVIDIA PyTorch 1.10; the second text detector is disabled |
+| `nomeroff_onnx` | TensorRT detector, TensorRT OCR | Nomeroff 4.0.1's `kz` model rebuilt and exported with the image's PyTorch 1.10 (`tools/export_nomeroff_onnx.py`), run in-process; FP32 engine, ONNX Runtime CPU fallback. `make run` default |
 | `easyocr_onnx` | TensorRT detector, TensorRT OCR | The same EasyOCR recognizer exported to ONNX at image build, run in-process |
 | `nomeroff` | Explicitly unavailable | Control Python is 3.9, but Nomeroff 4.0.1 also needs PyTorch >=1.12; Nano's CUDA stack is fixed at NVIDIA PyTorch 1.10 under Python 3.6 |
 | `paddleocr` | Explicitly unavailable | PaddleOCR 3.7 requires a newer Python stack and PaddlePaddle does not publish a compatible JetPack 4 aarch64 wheel |
@@ -189,7 +190,24 @@ for it, about 2 GFLOP per crop, so FP16 would save little; the first run logs
 rejects the model, the recognizer runs on the pinned Microsoft aarch64 ONNX Runtime CPU package as
 before and `model_loaded` says so; the uint8 original always runs there.
 
-`make run` uses `easyocr_onnx`. The image build exports EasyOCR's recognizer with its own
+`make run` uses `nomeroff_onnx`, Nomeroff Net's dedicated Kazakhstan model. Nomeroff 4.0.1
+itself cannot be installed on JetPack 4, but its `kz` text reader is a small network: a ResNet-18
+trunk up to layer3, a linear layer, two bidirectional LSTMs and a CTC head. The image build
+downloads the published checkpoint (`anpr_ocr_kz_2022_11_14.ckpt`, SHA-256 checked), rebuilds
+the network with the image's PyTorch 1.10 and exports a batch-1 ONNX model to
+`/opt/kz-anpr/models/nomeroff-onnx/kz.onnx` (`tools/export_nomeroff_onnx.py`, which first checks
+the export against Nomeroff's own forward pass). The C++ backend reproduces the `nomeroff`
+worker's preprocessing (channel swap, 200x50 bilinear resize, min-max scaling) and its greedy CTC
+decoding and confidences; on all 579 plate crops of the bundled clips its readings equal the
+PyTorch model's. It runs as an FP32 TensorRT engine of about 0.5 GFLOP per crop; the first run
+logs `event=tensorrt_engine_build tag=ocr`, and if TensorRT rejects the model it runs on ONNX
+Runtime CPU and `model_loaded` says so. On `parking.mp4` its most frequent reading is the correct
+152JTA02 (50 of 233 crops), where Fast Plate OCR's global model settles on 152JTA10. Once the car
+stops, the detector's crops cut into the plate's KZ emblem, so many readings gain a leading letter
+or misread the 02 region box, and the 60-attempt consensus can still end LOW_CONFIDENCE. The model
+does not read the Japanese demo plate in `car.mp4`, which is outside its training formats.
+
+`PROJECT_OCR=easyocr_onnx make run` uses EasyOCR. The image build exports EasyOCR's recognizer with its own
 PyTorch 1.10 (`tools/export_easyocr_onnx.py`) once per input width EasyOCR can use, 64 to 384 px,
 into `/opt/kz-anpr/models/easyocr-onnx`. The C++ backend picks the width EasyOCR would pad the
 crop to and reproduces its preprocessing, 0-9A-Z allowlist, contrast retry and score; on the
