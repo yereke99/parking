@@ -43,9 +43,15 @@ To run the ANPR project itself after the check:
 make run
 ```
 
-`make ocr-benchmark` compares the OCR engines one at a time on identical plate crops and on every
-frame of each clip, and prints accuracy, OCR and pipeline FPS, latency, RAM, startup, a ranking
-and the total time (see [OCR research](docs/OCR_RESEARCH.md)). `make benchmark-1` and
+`make run` processes `video/car.mp4`; `make run-all` runs the project on each of the three
+bundled clips in turn (`PROJECT_OCR=fast_plate_ocr make run-all` for Fast-Plate-OCR).
+
+`make ocr-benchmark` compares the OCR engines one at a time on identical plate crops from all three
+clips and on every frame of each clip, and prints accuracy against the labels in
+`data/manifests/video_research.csv`, OCR and pipeline FPS, latency, RAM, startup, a ranking and the
+total time (see [OCR research](docs/OCR_RESEARCH.md)).
+`make ocr-benchmark OCR_ENGINES="easyocr_onnx fast_plate_ocr"` limits it to those engines.
+`make benchmark-1` and
 `make benchmark-4` run only the selected stream count. For a short smoke
 test, use `make jetson-all MAX_FRAMES=300`. Source, videos, manifests and models are mounted from
 the existing checkout; results are written to `benchmark_results/`. The host is not modified by
