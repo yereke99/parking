@@ -65,9 +65,9 @@ void Logger::log(LogLevel level, const std::string& event, const std::string& fi
     line << '\n';
 
     const std::lock_guard<std::mutex> guard(mutex_);
-    std::ostream& out = level == LogLevel::kError ? std::cerr : std::cout;
-    out << line.str();
-    out.flush();
+    // Diagnostics go to stderr, so stdout carries nothing but the JSON recognition events.
+    std::cerr << line.str();
+    std::cerr.flush();
 }
 
 void logEvent(LogLevel level, const std::string& event, const LogFields& fields) {

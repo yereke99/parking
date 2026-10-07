@@ -1,0 +1,13 @@
+# Installed by tools/install_service.sh. The ANPR appends to the file (O_APPEND), so copytruncate
+# rotates it safely while the service keeps running. The container writes it as root, and var/
+# belongs to the checkout's user, hence `su root root`.
+@PROJECT_DIR@/var/events.jsonl {
+    su root root
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

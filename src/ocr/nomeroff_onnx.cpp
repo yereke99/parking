@@ -69,7 +69,7 @@ OcrResult NomeroffOnnx::recognize(const cv::Mat& plate) {
 
     {
         ScopedTimer timer(metrics_->ocr_preprocess);
-        // The worker hands Nomeroff BGR crops, and Nomeroff's TextDetector swaps the channels
+        // Nomeroff Net's pipeline passes BGR crops, and its TextDetector swaps the channels
         // (convert_cv_zones_rgb_to_bgr) before normalize_img: the network sees RGB.
         cv::cvtColor(plate, rgb_,
                      plate.channels() == 3 ? cv::COLOR_BGR2RGB : cv::COLOR_GRAY2RGB);
@@ -97,10 +97,10 @@ OcrResult NomeroffOnnx::recognize(const cv::Mat& plate) {
     result.confidence = reading.confidence;
     result.min_char_confidence = reading.min_char_confidence;
     result.character_confidences = std::move(reading.character_confidences);
-    result.region = config_.region_mode;
-    // The same gates as the `nomeroff` worker backend.
+    result.region = "kz";
+    // Three gates: an empty reading, a weak character, a low mean.
     if (result.text.empty()) {
-        result.rejection = OcrRejection::kAllPadding;
+        result.rejection = OcrRejection::kNoText;
     } else if (result.min_char_confidence < config_.min_char_confidence) {
         result.rejection = OcrRejection::kWeakCharacter;
     } else if (result.confidence < config_.min_confidence) {
@@ -111,13 +111,8 @@ OcrResult NomeroffOnnx::recognize(const cv::Mat& plate) {
 
 std::unique_ptr<IPlateOcr> makeNomeroffOnnx(const OcrConfig& ocr, const InferenceConfig& inference,
                                             PipelineMetrics* metrics, std::string& error) {
-    if (ocr.region_mode != "kz" || ocr.lines_count != 1) {
-        error = "INVALID_CONFIG: nomeroff_onnx carries only Nomeroff's one-line kz model "
-                "(ocr.region_mode: kz, ocr.lines_count: 1)";
-        return nullptr;
-    }
     SessionRequest request;
-    request.model_path = ocr.nomeroff_onnx_model;
+    request.model_path = ocr.model;
     request.inference = inference;
     // `strict_backend` guards the detector. Like the other OCR models this one may fall back to
     // ONNX Runtime; the model_loaded line and the backend name say where it runs.

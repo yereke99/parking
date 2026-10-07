@@ -1,27 +1,38 @@
+# Builds
 build/
 build-*/
 cmake-build-*/
-*.log
-*.tmp
+
+# Models are downloaded or exported, never committed (models/README.md)
 *.onnx
-*.param
-*.bin
-models/trt_cache/
 *.engine
 *.plan
+models/nomeroff/
+
+# Runtime state: TensorRT engine cache, events.jsonl
+var/
+
+# Clips recorded from the real camera; only the test clip is tracked
+/video/*
+!/video/parking.mp4
 debug_frames/
 debug_crops/
+
+# Left behind by the research setup (research-archive branch)
+benchmark_results/
 benchmark_cache/
+models/trt_cache/
+models/research/
 data/raw/
 data/processed/
+*.param
+*.bin
+
+# Local tooling
+.venv*/
 __pycache__/
 *.pyc
-.venv-fast/
-.venv-nomeroff/
-.venv-paddleocr/
-.venv-easyocr/
-benchmark_results/
+*.log
+*.tmp
 /test-output/
-models/nomeroff/
-models/research/
 .DS_Store

@@ -9,8 +9,8 @@
 
 ## Prioritized Ordinary Formats
 
-Layouts are configuration, not code. `validation.formats` in `config/default.yaml` lists them as
-slot patterns:
+Layouts are configuration, not code. `validation.formats` in `config/jetson-nano.yaml` and
+`config/default.yaml` lists them as slot patterns:
 
 ```text
 D  digit
@@ -18,13 +18,16 @@ L  letter drawn from validation.letters
 R  region-code digit, checked against validation.regions
 ```
 
-The shipped set covers the ordinary vehicle formats a parking entrance needs first:
+Both shipped profiles accept the two current ordinary layouts a parking entrance sees:
 
-| Profile | Pattern | Normalized form |
-| --- | --- | --- |
-| Current individual / physical person, Type 1A and 2A | `DDDLLLRR` | `123ABC02` |
-| Current legal entity, Type 1 and 2 | `DDDLLRR` | `123AB02` |
-| Legacy 1993 | `LDDDLLL` | `A123BCD` |
+| Name | Profile | Pattern | Normalized form |
+| --- | --- | --- | --- |
+| `current_individual` | Individual / physical person, Type 1A and 2A | `DDDLLLRR` | `123ABC02` |
+| `current_legal_entity` | Legal entity, Type 1 and 2 | `DDDLLRR` | `123AB02` |
+
+The built-in rules, used when a config lists no formats, also accept the 1993 layout `LDDDLLL`
+(`A123BCD`, name `legacy_1993`, weight 0.9). The shipped profiles leave it out because no 1993
+plate has been checked against the OCR; `config/default.yaml` shows the entry to uncomment.
 
 Adding a layout is a config edit and needs no rebuild. When several layouts match a reading, the
 one needing the fewest character repairs wins; ties break on the layout's configured `weight`.
@@ -78,14 +81,14 @@ Shipped defaults:
 
 `1 -> I` in letter slots is a deliberate change from the earlier policy, which excluded it on the
 grounds that `1` could plausibly mean more than one Latin letter. Two things argued for adding
-it: it is the single most common confusion in practice, and on the bundled development clip the
-OCR model alternated between `I` and `1` in the same slot across consecutive frames, with `I`
-being correct. The risk is real but narrow, and it is bounded by two other mechanisms: a repaired
+it: it is the single most common confusion in practice, and on a development clip the OCR
+alternated between `I` and `1` in the same slot across consecutive frames, with `I` being
+correct. The risk is real but narrow, and it is bounded by two other mechanisms: a repaired
 reading carries a confidence penalty, and multi-frame consensus has to agree on the repaired
 string before anything is accepted.
 
-A deployment that disagrees removes the entry from `validation.letter_confusions`. Nothing in the
-code depends on it.
+A deployment that disagrees lists `validation.letter_confusions` in its config without that
+entry. Nothing in the code depends on it.
 
 If more than `validation.max_corrections` repairs are needed, the reading is reported `AMBIGUOUS`
 and discarded. Rejecting an uncertain result is always preferred to forcing it into a
@@ -108,8 +111,7 @@ legal text, but none should be added without a labelled sample to test against.
 
 ## OCR Model Caveat
 
-The default is now Nomeroff Net's dedicated `kz` OCR model, not the legacy global Fast Plate OCR
-model. A country-specific model is a better basis, but this repository still has no labelled KZ
-evaluation set. Do not turn the upstream model's dataset accuracy into a parking-camera accuracy
-claim; evaluate the actual distance, angle, shutter, glare, weather and plate mix. See
-[model evaluation](MODEL_EVALUATION.md).
+The OCR is Nomeroff Net's dedicated `kz` model. A country-specific model is a good basis, but
+this repository has no labelled KZ evaluation set. Do not turn the upstream model's dataset
+accuracy into a parking-camera accuracy claim; evaluate the actual distance, angle, shutter, glare,
+weather and plate mix. See [OCR](OCR.md).

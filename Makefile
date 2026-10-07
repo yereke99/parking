@@ -1,52 +1,57 @@
 SHELL := /bin/bash
 
-.PHONY: jetson-all docker-build jetson-check check run project run-all benchmark-1 benchmark-4 \
-	research ocr-benchmark
+.PHONY: docker-build check run camera service bench shell build test
 
-# The bundled clips: Japanese demo (BR45IL), Kazakhstan plate (152JTA02), unlabelled dashcam.
-VIDEOS ?= video/car.mp4 video/parking.mp4 video/parking2.mp4
+# Test clip and live camera for `make run`, `make camera` and `make service`.
+VIDEO ?= video/parking.mp4
+CAMERA ?=
+CAMERA_ID ?= gate-01
 
-# Complete reproducible Jetson workflow. The research target prints the comparison table and the
-# exact JSON/Markdown result paths when it finishes.
-jetson-all:
-	$(MAKE) docker-build
-	$(MAKE) jetson-check
-	$(MAKE) research
+# ---- Jetson Nano (Docker) ----------------------------------------------------------------------
 
+# Build the image: C++ binaries, the ONNX Runtime fallback, Nomeroff's Kazakhstan OCR model.
 docker-build:
 	./tools/jetson_docker.sh build
 
-jetson-check check:
+# List the backends, load both models on TensorRT and cache their engines.
+check:
 	./tools/jetson_docker.sh check
 
-# Full ANPR project: TensorRT detector + Nomeroff's Kazakhstan OCR on TensorRT in the same
-# process by default. PROJECT_OCR=easyocr_onnx or fast_plate_ocr selects another OCR.
-# Example: make run RUN_ARGS='--source rtsp://user:pass@camera/stream'
-run project:
-	PROJECT_OCR=$(or $(PROJECT_OCR),nomeroff_onnx) ./tools/jetson_docker.sh run $(RUN_ARGS)
+# Replay the test clip once and print the recognised plates.
+run:
+	./tools/jetson_docker.sh run --source "$(VIDEO)" $(RUN_ARGS)
 
-# `make run` once per clip in VIDEOS, one after another, with the same OCR.
-# Example: PROJECT_OCR=fast_plate_ocr make run-all
-run-all:
-	@for video in $(VIDEOS); do \
-		echo "==== $$video (OCR: $(or $(PROJECT_OCR),nomeroff_onnx))"; \
-		PROJECT_OCR=$(or $(PROJECT_OCR),nomeroff_onnx) ./tools/jetson_docker.sh run \
-			--source "$$video" $(RUN_ARGS) || exit $$?; \
-	done
+# Live camera in the foreground (Ctrl+C stops it), for example:
+#   make camera CAMERA='rtsp://user:password@192.168.1.64:554/Streaming/Channels/101'
+#   make camera CAMERA=0        (first V4L2/USB camera)
+# Every event is also appended to var/events.jsonl.
+camera:
+	@if [[ -z "$(CAMERA)" ]]; then \
+		echo "usage: make camera CAMERA=rtsp://user:password@host:554/stream"; exit 2; \
+	fi
+	./tools/jetson_docker.sh run --source "$(CAMERA)" --camera-id "$(CAMERA_ID)" \
+		--events-file var/events.jsonl $(RUN_ARGS)
 
-benchmark-1:
-	./tools/jetson_docker.sh benchmark --research --research-streams 1 $(if $(MAX_FRAMES),--max-frames $(MAX_FRAMES),)
+# The same camera as a systemd service: starts at boot, restarts after any failure (asks for
+# sudo). Runs `make check` first.
+service:
+	@if [[ -z "$(CAMERA)" ]]; then \
+		echo "usage: make service CAMERA=rtsp://user:password@host:554/stream"; exit 2; \
+	fi
+	./tools/install_service.sh "$(CAMERA)" "$(CAMERA_ID)"
 
-benchmark-4:
-	./tools/jetson_docker.sh benchmark --research --research-streams 4 $(if $(MAX_FRAMES),--max-frames $(MAX_FRAMES),)
+# FPS and latency on the test clip.
+bench:
+	./tools/jetson_docker.sh bench --video "$(VIDEO)" $(BENCH_ARGS)
 
-research:
-	./tools/jetson_docker.sh benchmark --research $(if $(MAX_FRAMES),--max-frames $(MAX_FRAMES),)
+shell:
+	./tools/jetson_docker.sh shell
 
-# Sequential OCR comparison on all three clips: one engine at a time on identical crops, then
-# every frame of each clip. Prints the comparison table, ranking and total time; writes Markdown
-# and JSON. Limit the engines with OCR_ENGINES, for example:
-#   make ocr-benchmark OCR_ENGINES="nomeroff_onnx easyocr_onnx fast_plate_ocr"
-ocr-benchmark:
-	./tools/jetson_docker.sh benchmark --ocr-benchmark $(if $(MAX_FRAMES),--max-frames $(MAX_FRAMES),) \
-		$(foreach engine,$(OCR_ENGINES),--ocr-engine $(engine))
+# ---- Development machine (native CMake build) --------------------------------------------------
+
+build:
+	cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $(CMAKE_ARGS)
+	cmake --build build -j
+
+test: build
+	cd build && ctest --output-on-failure

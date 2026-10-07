@@ -1,9 +1,11 @@
 #include "anpr/pipeline/recognition_event.hpp"
 
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 
+#include "anpr/common/logging.hpp"
 #include "anpr/pipeline/plate_sink.hpp"
 
 namespace anpr {
@@ -50,6 +52,23 @@ void writeOptional(std::ostringstream& out, const char* key,
     } else {
         out << "null";
     }
+}
+
+/// ISO 8601 in UTC with milliseconds, for example 2026-10-08T07:12:03.120Z.
+std::string formatUtc(std::int64_t unix_time_ms) {
+    std::int64_t seconds = unix_time_ms / 1000;
+    std::int64_t millis = unix_time_ms % 1000;
+    if (millis < 0) {
+        millis += 1000;
+        --seconds;
+    }
+    const auto time = static_cast<std::time_t>(seconds);
+    std::tm utc{};
+    gmtime_r(&time, &utc);
+    std::ostringstream out;
+    out << std::put_time(&utc, "%Y-%m-%dT%H:%M:%S") << '.' << std::setw(3) << std::setfill('0')
+        << millis << 'Z';
+    return out.str();
 }
 
 }  // namespace
@@ -104,6 +123,7 @@ std::string toJson(const PlateRecognitionEvent& event) {
     out << ",\"raw_plate\":\"" << escapeJson(event.raw_plate) << '"';
     out << ",\"confidence\":" << event.confidence;
     out << ",\"timestamp_ms\":" << event.timestamp_ms;
+    out << ",\"time\":\"" << formatUtc(event.unix_time_ms) << '"';
     out << ",\"camera_id\":\"" << escapeJson(event.camera_id) << '"';
     out << ",\"plate_box\":{\"x\":" << event.plate_box.x << ",\"y\":" << event.plate_box.y
         << ",\"width\":" << event.plate_box.width << ",\"height\":" << event.plate_box.height << '}';
@@ -124,6 +144,18 @@ std::string toJson(const PlateRecognitionEvent& event) {
 void JsonStdoutSink::onRecognition(const PlateRecognitionEvent& event) {
     std::cout << toJson(event) << '\n';
     std::cout.flush();
+}
+
+JsonLinesFileSink::JsonLinesFileSink(const std::string& path)
+    : path_(path), out_(path, std::ios::app) {}
+
+void JsonLinesFileSink::onRecognition(const PlateRecognitionEvent& event) {
+    out_ << toJson(event) << '\n';
+    out_.flush();
+    if (!out_) {
+        logEvent(LogLevel::kError, "events_file_write_failed", LogFields().add("path", path_));
+        out_.clear();
+    }
 }
 
 void FanOutSink::onRecognition(const PlateRecognitionEvent& event) {

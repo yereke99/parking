@@ -44,14 +44,12 @@ void usage() {
   --streams N         simulate N cameras by repeating --video (supported: 1, 2, 4)
   --config PATH       configuration file (default config/default.yaml)
   --backend B         auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
-  --ocr-backend B     nomeroff_onnx | fast_plate_ocr | nomeroff | paddleocr | easyocr |
-                      easyocr_onnx
   --detector-only     time the detector on every frame, skipping the state machine and OCR
   --extract-crops DIR run the detector on every frame and save each crop that passes the
                       pipeline's ROI, size and quality gates (as OCR would receive it) to
                       DIR/<video>/, appending DIR/index.csv
-  --ocr-crops INDEX   load only the OCR backend, warm it up, then read every crop listed in an
-                      --extract-crops index; every backend is scored on the same crops
+  --ocr-crops INDEX   load only the OCR model, warm it up, then read every crop listed in an
+                      --extract-crops index and report each reading and its latency
   --max-frames N      stop after N frames
   --repeat N          replay the clip N times, for a longer sample
   --warmup-frames N   model warm-up calls before measurement (default 3)
@@ -65,7 +63,6 @@ struct Cli {
     std::string video;
     std::string config_path{"config/default.yaml"};
     std::string backend;
-    std::string ocr_backend;
     std::vector<std::string> sources;
     int streams{0};
     int warmup_frames{3};
@@ -101,25 +98,8 @@ std::string jsonEscape(const std::string& value) {
     return out.str();
 }
 
-std::string configuredOcrModel(const anpr::OcrConfig& config) {
-    if (config.backend == "fast_plate_ocr") {
-        return config.model;
-    }
-    if (config.backend == "paddleocr") {
-        return config.paddle_model + " (" + config.paddle_engine + ")";
-    }
-    if (config.backend == "easyocr") {
-        return "EasyOCR languages=" + config.easyocr_languages;
-    }
-    if (config.lines_count == 2) {
-        return config.region_mode == "su" ? "su_2lines_efficientnet_b2"
-                                           : "eu_2lines_efficientnet_b2";
-    }
-    return config.region_mode == "su" ? "su_efficientnet_b2" : config.region_mode;
-}
-
-/// Replays a clip through the detector on every frame. This is the number to compare against the
-/// Python prototype, which also ran the detector on every frame.
+/// Replays a clip through the detector on every frame: the detector's raw throughput, without the
+/// state machine that normally skips most frames.
 int runDetectorOnly(const Cli& cli, anpr::AnprConfig config) {
     anpr::PipelineMetrics metrics;
     std::string error;
@@ -200,7 +180,7 @@ std::vector<std::string> splitCsv(const std::string& line) {
 
 /// Saves every plate crop the pipeline would hand to OCR: the detector runs on every frame inside
 /// the detection zone, then each detection goes through the pipeline's size and quality gates and
-/// its optional enhancement. --ocr-crops later scores every OCR backend on exactly this set.
+/// its optional enhancement. --ocr-crops later reads exactly this set with the OCR model.
 int runExtractCrops(const Cli& cli, anpr::AnprConfig config) {
     config.camera.realtime_file = false;
     anpr::PipelineMetrics metrics;
@@ -306,7 +286,7 @@ int runExtractCrops(const Cli& cli, anpr::AnprConfig config) {
     return 0;
 }
 
-/// Times one OCR backend alone on a fixed crop set. Loading and warm-up are reported separately
+/// Times the OCR model alone on a fixed crop set. Loading and warm-up are reported separately
 /// and excluded from the latency figures.
 int runOcrCrops(const Cli& cli, const anpr::AnprConfig& config) {
     struct Crop {
@@ -372,8 +352,7 @@ int runOcrCrops(const Cli& cli, const anpr::AnprConfig& config) {
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
     std::cout << std::fixed << std::setprecision(3);
-    std::cout << "{\"mode\":\"ocr_crops\",\"ocr_backend\":\"" << jsonEscape(config.ocr.backend)
-              << "\",\"backend\":\"" << jsonEscape(ocr->backendName()) << "\",\"model\":\""
+    std::cout << "{\"mode\":\"ocr_crops\",\"backend\":\"" << jsonEscape(ocr->backendName()) << "\",\"model\":\""
               << jsonEscape(ocr->modelDescription()) << "\",\"load_ms\":" << load_ms
               << ",\"warmup_ms\":" << warmup_ms << ",\"seconds\":" << seconds
               << ",\"crops\":" << latency.count() << ",\"unreadable_files\":" << unreadable
@@ -636,9 +615,7 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
                   << "\",\"models\":{\"detector\":\""
                   << jsonEscape(config.detector.model) << "\",\"detector_input_size\":"
                   << config.detector.input_size << ",\"ocr\":\""
-                  << jsonEscape(configuredOcrModel(config.ocr)) << "\",\"ocr_region\":\""
-                  << jsonEscape(config.ocr.region_mode) << "\",\"ocr_lines\":"
-                  << config.ocr.lines_count << "},\"aggregate\":";
+                  << jsonEscape(config.ocr.model) << "\"},\"aggregate\":";
         printMetricsJson(aggregate, seconds);
         std::cout << ",\"per_stream\":[";
         for (std::size_t index = 0; index < runtimes.size(); ++index) {
@@ -732,8 +709,6 @@ int main(int argc, char** argv) {
             cli.config_path = value;
         } else if (arg == "--backend") {
             cli.backend = value;
-        } else if (arg == "--ocr-backend") {
-            cli.ocr_backend = value;
         } else if (arg == "--max-frames") {
             if (!parseInteger(value, "--max-frames", cli.max_frames)) return 2;
         } else if (arg == "--repeat") {
@@ -761,11 +736,6 @@ int main(int argc, char** argv) {
         return 2;
     }
     anpr::AnprConfig config = loaded.config;
-    std::string environment_error;
-    if (!anpr::applyEnvironmentOverrides(config, environment_error)) {
-        std::cerr << environment_error << '\n';
-        return 2;
-    }
     if (!cli.video.empty() || !cli.sources.empty()) {
         config.camera.source = cli.video.empty() ? cli.sources.front() : cli.video;
     }
@@ -780,14 +750,6 @@ int main(int argc, char** argv) {
         config.inference.backend = anpr::inferenceBackendFromString(cli.backend, ok);
         if (!ok) {
             std::cerr << "unknown backend '" << cli.backend << "'\n";
-            return 2;
-        }
-    }
-    if (!cli.ocr_backend.empty()) {
-        config.ocr.backend = cli.ocr_backend;
-        std::string validation_error;
-        if (!anpr::validateConfig(config, validation_error)) {
-            std::cerr << validation_error << '\n';
             return 2;
         }
     }

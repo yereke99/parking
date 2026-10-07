@@ -1,19 +1,13 @@
-# Allowlist: only what Dockerfile.jetson-nano copies. Videos, models, results and virtualenvs are
-# mounted at run time, so they stay out of the build context.
+# Allowlist: only what Dockerfile.jetson-nano copies. Videos, the detector model and runtime state
+# are mounted at run time, so they stay out of the build context.
 *
 !CMakeLists.txt
 !config/
 !include/
-!models/plate_ocr_config.yaml
 !models/nomeroff/*.ckpt
-!requirements/jetson-nano.lock
-!requirements/jetson-nano-build.lock
-!requirements/jetson-nano-build-wheels.txt
-!requirements/jetson-nano-wheels.txt
 !src/
 !tests/
 !tools/
 **/__pycache__
 **/*.pyc
-**/*.pyo
 **/.DS_Store

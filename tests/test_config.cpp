@@ -26,12 +26,11 @@ TEST("shipped default.yaml has no unknown keys") {
     }
 }
 
-TEST("shipped research.yaml loads without unknown keys") {
-    const auto loaded = anpr::loadConfigFile("config/research.yaml");
+TEST("shipped jetson-nano.yaml loads without unknown keys") {
+    const auto loaded = anpr::loadConfigFile("config/jetson-nano.yaml");
     CHECK(loaded.ok);
-    if (!loaded.unknown_keys.empty()) {
-        anpr_test::recordFailure("unknown research config key: " + loaded.unknown_keys.front());
-    }
+    CHECK(loaded.unknown_keys.empty());
+    CHECK_EQ(loaded.config.inference.backend, anpr::InferenceBackend::kTensorRT);
 }
 
 TEST("unknown keys are reported instead of silently ignored") {
@@ -74,6 +73,21 @@ validation:
     CHECK_EQ(loaded.config.validation.digit_confusions.size(), std::size_t{2});
     CHECK_EQ(loaded.config.validation.digit_confusions.at('O'), '0');
     CHECK_EQ(loaded.config.validation.letter_confusions.at('0'), 'O');
+}
+
+TEST("a validation list left out of the file keeps the built-in one") {
+    const auto loaded = anpr::loadConfigText(R"(
+validation:
+  formats:
+    - name: kz_individual
+      pattern: DDDLLLRR
+)");
+    CHECK(loaded.ok);
+    CHECK_EQ(loaded.config.validation.formats.size(), std::size_t{1});
+    CHECK_EQ(loaded.config.validation.regions.size(), std::size_t{20});
+    CHECK_EQ(loaded.config.validation.regions.at("02"), std::string("Almaty"));
+    CHECK_EQ(loaded.config.validation.digit_confusions.at('O'), '0');
+    CHECK_EQ(loaded.config.validation.letter_confusions.at('1'), 'I');
 }
 
 TEST("an unknown slot class in a pattern is rejected") {
@@ -138,57 +152,24 @@ TEST("the inference backend name is parsed and rejected when unknown") {
     CHECK(!bad.ok);
 }
 
-TEST("Nomeroff is the default OCR backend with explicit Kazakhstan routing") {
+TEST("the OCR reads Nomeroff's Kazakhstan model by default") {
     anpr::AnprConfig config;
-    config.validation = anpr::defaultKazakhstanValidation();
-    CHECK_EQ(config.ocr.backend, std::string("nomeroff"));
-    CHECK_EQ(config.ocr.region_mode, std::string("kz"));
-    CHECK_EQ(config.ocr.device, std::string("auto"));
+    CHECK_EQ(config.ocr.model, std::string("models/nomeroff-onnx/kz.onnx"));
+    CHECK(config.ocr.max_attempts > 0);
 }
 
-TEST("invalid Nomeroff device region and line settings fail configuration") {
-    CHECK(!anpr::loadConfigText("ocr:\n  device: quantum\n").ok);
-    CHECK(!anpr::loadConfigText("ocr:\n  region_mode: auto\n").ok);
-    CHECK(!anpr::loadConfigText("ocr:\n  lines_count: 3\n").ok);
+TEST("an empty OCR model or an out-of-range OCR threshold fails configuration") {
+    CHECK(!anpr::loadConfigText("ocr:\n  model: \"\"\n").ok);
+    CHECK(!anpr::loadConfigText("ocr:\n  min_confidence: 1.5\n").ok);
+    CHECK(!anpr::loadConfigText("ocr:\n  min_char_confidence: -0.1\n").ok);
+    CHECK(!anpr::loadConfigText("ocr:\n  max_attempts: 0\n").ok);
 }
 
-TEST("legacy OCR remains selectable only by explicit configuration") {
-    const auto loaded = anpr::loadConfigText("ocr:\n  backend: fast_plate_ocr\n");
+TEST("removed settings are reported, not fatal") {
+    const auto loaded =
+        anpr::loadConfigText("ocr:\n  backend: fast_plate_ocr\nvalidation:\n  profile: auto\n");
     CHECK(loaded.ok);
-    CHECK_EQ(loaded.config.ocr.backend, std::string("fast_plate_ocr"));
-}
-
-TEST("all four research OCR backends are selectable") {
-    for (const std::string backend : {"fast_plate_ocr", "nomeroff", "paddleocr", "easyocr"}) {
-        const auto loaded = anpr::loadConfigText("ocr:\n  backend: " + backend + "\n");
-        CHECK(loaded.ok);
-        CHECK_EQ(loaded.config.ocr.backend, backend);
-    }
-    CHECK(!anpr::loadConfigText("ocr:\n  backend: unknown\n").ok);
-}
-
-TEST("Russian OCR mode selects Russian position-aware validation") {
-    const auto loaded = anpr::loadConfigText("ocr:\n  region_mode: ru\n");
-    CHECK(loaded.ok);
-    CHECK_EQ(loaded.config.validation.letters, std::string("ABCEHKMOPTXY"));
-    const anpr::PlateValidator validator(loaded.config.validation);
-    CHECK(validator.validate("A123BC77", 0.95).valid());
-    CHECK(validator.validate("A123BC777", 0.95).valid());
-    CHECK(!validator.validate("123ABC02", 0.95).valid());
-}
-
-TEST("other CIS OCR modes require an explicit validation profile") {
-    const auto automatic = anpr::loadConfigText("ocr:\n  region_mode: by\n");
-    CHECK(!automatic.ok);
-    const auto custom = anpr::loadConfigText(R"(
-ocr:
-  region_mode: by
-validation:
-  profile: custom
-  letters: "ABCEHIKMOPT"
-  formats:
-    - name: by_private
-      pattern: DDDDLLD
-)");
-    CHECK(custom.ok);
+    CHECK_EQ(loaded.unknown_keys.size(), std::size_t{2});
+    CHECK_EQ(loaded.unknown_keys.front(), std::string("ocr.backend"));
+    CHECK_EQ(loaded.unknown_keys.back(), std::string("validation.profile"));
 }

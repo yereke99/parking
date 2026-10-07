@@ -1,45 +1,61 @@
 # Models
 
-Do not commit converted or downloaded model binaries, or generated TensorRT engines, unless
-explicitly approved. `.gitignore` excludes `*.onnx`, `*.engine`, `*.plan` and `models/trt_cache/`.
+Model files are exported or downloaded, never committed: `.gitignore` excludes `*.onnx`,
+`*.engine`, `*.plan` and `models/nomeroff/`. Nothing is downloaded at run time.
 
-## Production files
+| File | What it is | Where it comes from |
+| --- | --- | --- |
+| `models/license_plate_detector.onnx` | YOLOv8n plate detector, 1x3x640x640 input, one class | exported from `../license_plate_detector.pt`, see below |
+| `/opt/kz-anpr/models/nomeroff-onnx/kz.onnx` (in the image) | Nomeroff Net's Kazakhstan OCR | made by `make docker-build` ([OCR](../docs/OCR.md)) |
+| `models/nomeroff-onnx/kz.onnx` | the same OCR model, for a development machine | `tools/export_nomeroff_onnx.py`, see below |
+| `models/nomeroff/anpr_ocr_kz_2022_11_14.ckpt` | optional local copy of the Nomeroff checkpoint | used by the image build instead of the download |
+| `var/trt_cache/` | TensorRT engines | built on the Jetson on the first start |
 
-| File | What it is |
-| --- | --- |
-| `license_plate_detector.onnx` | YOLOv8n plate detector, exported from `../license_plate_detector.pt` |
-| `plate_ocr.onnx` | Fast Plate OCR `cct-s-v2-global` |
-| `plate_ocr_config.yaml` | the OCR model's contract, read at startup |
-| `trt_cache/` | serialised TensorRT engines, generated on the device |
-| `/opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx` | the `plate_ocr.onnx` model, downloaded and SHA-256 checked by the Jetson image build |
-| `easyocr-onnx/english_g2_<width>.onnx` | EasyOCR recognizer per input width, exported by `tools/export_easyocr_onnx.py` (inside the Jetson image at `/opt/kz-anpr/models/easyocr-onnx`) |
+## The plate detector
 
-`../license_plate_detector.pt` is the Ultralytics checkpoint kept from the prototype. The C++
-runtime never loads `.pt` files and never invokes Python.
-
-## Producing them
+`../license_plate_detector.pt` is the Ultralytics checkpoint the project started from. Export it
+on any PC with Python 3.8 or newer, then copy the result to `models/` on the Jetson:
 
 ```sh
+python3 -m pip install ultralytics      # installs what the ONNX export needs on first use
 python3 tools/export_detector_onnx.py --weights license_plate_detector.pt --imgsz 640
 mv license_plate_detector.onnx models/
-
-.venv-fast/bin/python tools/fetch_ocr_model.py --model cct-s-v2-global-model
+scp models/license_plate_detector.onnx jetson:~/parking/models/
 ```
 
-On the Jetson, build the engine cache once after deployment:
+The graph is opset 12. Newer exporters stamp ONNX IR version 10, which TensorRT 8.2 rejects; the
+TensorRT session rewrites that version byte to 8 in memory when it loads the model, and the file
+on disk is never changed.
+
+## The OCR model on a development machine
+
+The Jetson image makes its own copy. For `config/default.yaml` on a PC:
 
 ```sh
-tools/build_trt_engines.sh config/default.yaml ./build/kz_anpr
+curl -fLO https://nomeroff.net.ua/models/ocr/kz/torch/model_v3.3/anpr_ocr_kz_2022_11_14.ckpt
+echo "b8d09e77dc0d212cf4a9f266e2ba2b18bd655dfcb45582195d64d647ca37ac28  anpr_ocr_kz_2022_11_14.ckpt" \
+  | sha256sum -c -                        # macOS: shasum -a 256 -c -
+python3 -m pip install torch
+python3 tools/export_nomeroff_onnx.py --checkpoint anpr_ocr_kz_2022_11_14.ckpt \
+  --output models/nomeroff-onnx/kz.onnx
 ```
+
+The same checkpoint, placed at `models/nomeroff/anpr_ocr_kz_2022_11_14.ckpt`, spares the Jetson
+image build its download.
 
 ## Verifying a swap
 
 ```sh
-./build/kz_anpr --config config/default.yaml --warmup
+./build/kz_anpr --config config/default.yaml --warmup   # development machine
+make check                                             # Jetson
 ```
 
-The OCR loader cross-checks `plate_ocr_config.yaml` against the ONNX input signature and the
-plate head size, so a mismatched pair fails at startup rather than producing quiet nonsense.
+Both load the models and run one inference each; a missing or mismatched file fails here with
+exit code 4 instead of during a run.
 
-See [model evaluation](../docs/MODEL_EVALUATION.md) for the full contract of each model, the
-licence question on the detector, and what still needs measuring.
+## Licences
+
+- The detector's ONNX metadata declares Ultralytics' **AGPL-3.0**; how the weights were trained is
+  not recorded. Resolve this with whoever owns the weights, or retrain on a permissively licensed
+  base, before distributing the system.
+- Nomeroff Net is GPL-3.0 ([OCR](../docs/OCR.md#licence)).

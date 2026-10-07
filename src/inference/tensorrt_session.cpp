@@ -130,12 +130,6 @@ class TensorRTSession final : public IInferenceSession {
 public:
     explicit TensorRTSession(const SessionRequest& request) {
         try {
-            if (request.requires_uint8_input) {
-                throw std::runtime_error(
-                    "native TensorRT 8.2 path supports float32 models only; uint8 OCR uses the "
-                    "pinned ONNX Runtime CPU fallback (tools/convert_fast_plate_ocr.py makes a "
-                    "float32-input copy that TensorRT accepts)");
-            }
             checkCuda(cudaSetDevice(request.inference.device_id), "cudaSetDevice");
             runtime_.reset(nvinfer1::createInferRuntime(logger_));
             if (!runtime_) {

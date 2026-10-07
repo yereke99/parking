@@ -62,7 +62,6 @@ private:
 
 anpr::OcrConfig kzConfig() {
     anpr::OcrConfig config;
-    config.region_mode = "kz";
     config.min_confidence = 0.40;
     config.min_char_confidence = 0.20;
     return config;
@@ -70,7 +69,7 @@ anpr::OcrConfig kzConfig() {
 
 }  // namespace
 
-TEST("nomeroff_onnx fills the CHW tensor exactly as the worker preprocesses a BGR crop") {
+TEST("nomeroff_onnx fills the CHW tensor exactly as Nomeroff Net preprocesses a BGR crop") {
     cv::Mat crop(37, 141, CV_8UC3);
     cv::randu(crop, cv::Scalar::all(20), cv::Scalar::all(230));
     anpr::PipelineMetrics metrics;
@@ -100,7 +99,7 @@ TEST("nomeroff_onnx fills the CHW tensor exactly as the worker preprocesses a BG
     }
 }
 
-TEST("nomeroff_onnx returns the decoded plate with the worker's confidence gates") {
+TEST("nomeroff_onnx returns the decoded plate and applies the confidence gates") {
     cv::Mat crop(40, 160, CV_8UC3, cv::Scalar(30, 120, 200));
     anpr::PipelineMetrics metrics;
     auto session = std::make_unique<FakeNomeroffSession>();
@@ -121,7 +120,7 @@ TEST("nomeroff_onnx returns the decoded plate with the worker's confidence gates
 
     fake.spell("-------------", 9.0F);
     result = ocr.recognize(crop);
-    CHECK(result.rejection == anpr::OcrRejection::kAllPadding);
+    CHECK(result.rejection == anpr::OcrRejection::kNoText);
     CHECK(ocr.recognize(cv::Mat()).rejection == anpr::OcrRejection::kEmptyCrop);
     CHECK(ocr.backendName() == "nomeroff_fake");
 }

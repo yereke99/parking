@@ -33,7 +33,12 @@ struct PlateRecognitionEvent {
     std::string normalized_plate;
     std::string raw_plate;
     double confidence{0.0};
+    /// Pipeline time in milliseconds: the position in the clip for a video file, a monotonic
+    /// clock for a live camera. It orders the events of one run.
     std::int64_t timestamp_ms{0};
+    /// Wall-clock time the event was produced, in milliseconds since the Unix epoch. The JSON
+    /// carries it as `time`, ISO 8601 in UTC.
+    std::int64_t unix_time_ms{0};
     BoundingBox plate_box;
     std::string camera_id;
     std::optional<std::string> region_code;

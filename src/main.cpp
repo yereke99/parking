@@ -34,6 +34,7 @@ void usage() {
   --source S         camera source override: file path, device index, rtsp:// URL,
                      or a GStreamer pipeline. Repeat for multiple streams.
   --camera-id ID     identifier written into every event
+  --events-file PATH also append every recognition event to PATH, one JSON object per line
   --backend B        auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
   --log-level L      error | warn | info | debug
   --timeline         one debug line per processed frame
@@ -53,6 +54,7 @@ struct Cli {
     std::string config_path{"config/default.yaml"};
     std::vector<std::string> sources;
     std::string camera_id;
+    std::string events_file;
     std::string backend;
     std::string log_level;
     bool timeline{false};
@@ -94,6 +96,8 @@ bool parseArgs(int argc, char** argv, Cli& cli, std::string& error) {
             cli.sources.push_back(std::move(source));
         } else if (arg == "--camera-id") {
             if (!value(cli.camera_id)) return false;
+        } else if (arg == "--events-file") {
+            if (!value(cli.events_file)) return false;
         } else if (arg == "--backend") {
             if (!value(cli.backend)) return false;
         } else if (arg == "--log-level") {
@@ -104,6 +108,22 @@ bool parseArgs(int argc, char** argv, Cli& cli, std::string& error) {
         }
     }
     return true;
+}
+
+/// Every event goes to stdout as a JSON line; `--events-file` adds a persistent copy.
+std::shared_ptr<anpr::PlateSink> makeEventSink(const std::string& events_file,
+                                               std::string& error) {
+    auto sink = std::make_shared<anpr::FanOutSink>();
+    sink->add(std::make_shared<anpr::JsonStdoutSink>());
+    if (!events_file.empty()) {
+        auto file = std::make_shared<anpr::JsonLinesFileSink>(events_file);
+        if (!file->ok()) {
+            error = "INVALID_CONFIG: cannot open events file " + events_file;
+            return nullptr;
+        }
+        sink->add(std::move(file));
+    }
+    return sink;
 }
 
 }  // namespace
@@ -144,7 +164,8 @@ int main(int argc, char** argv) {
     }
     anpr::AnprConfig config = loaded.config;
 
-    if (!anpr::applyEnvironmentOverrides(config, error)) {
+    const std::shared_ptr<anpr::PlateSink> event_sink = makeEventSink(cli.events_file, error);
+    if (event_sink == nullptr) {
         std::cerr << error << '\n';
         return 2;
     }
@@ -185,15 +206,13 @@ int main(int argc, char** argv) {
                        .add("source", anpr::maskCredentials(config.camera.source))
                        .add("streams", cli.sources.empty() ? 1 : cli.sources.size())
                        .add("requested_backend", anpr::toString(config.inference.backend))
-                       .add("ocr_backend", config.ocr.backend)
-                       .add("ocr_device", config.ocr.device)
-                       .add("plate_region_mode", config.ocr.region_mode)
+                       .add("ocr_model", config.ocr.model)
+                       .add("events_file", cli.events_file.empty() ? "none" : cli.events_file)
                        .add("opencv_threads", config.performance.opencv_threads));
 
     try {
         if (cli.sources.size() > 1) {
             struct StreamRuntime {
-                anpr::JsonStdoutSink sink;
                 std::unique_ptr<anpr::AnprPipeline> pipeline;
                 std::unique_ptr<anpr::FramePump> pump;
                 std::string camera_id;
@@ -219,8 +238,9 @@ int main(int argc, char** argv) {
                     (cli.camera_id.empty() ? config.camera.camera_id : cli.camera_id) + "-" +
                     std::to_string(index + 1);
                 stream->camera_id = stream_config.camera.camera_id;
+                // One processing thread serves every stream, so they share the event sink.
                 stream->pipeline =
-                    std::make_unique<anpr::AnprPipeline>(stream_config, stream->sink);
+                    std::make_unique<anpr::AnprPipeline>(stream_config, *event_sink);
                 stream->pipeline->setDetector(anpr::makeSharedPlateDetectorClient(
                     shared_detector, &stream->pipeline->metrics()));
                 if (!stream->pipeline->loadModels(error)) {
@@ -311,8 +331,7 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        anpr::JsonStdoutSink sink;
-        anpr::AnprPipeline pipeline(config, sink);
+        anpr::AnprPipeline pipeline(config, *event_sink);
         if (!pipeline.loadModels(error)) {
             anpr::logEvent(anpr::LogLevel::kError, "model_load_failed",
                            anpr::LogFields().add("reason", error));

@@ -18,8 +18,7 @@ enum class OcrRejection {
     kNone,
     kEmptyCrop,
     kInferenceFailed,
-    kAllPadding,
-    kInteriorPadding,
+    kNoText,
     kWeakCharacter,
     kLowConfidence,
 };
@@ -28,15 +27,13 @@ std::string toString(OcrRejection reason);
 
 struct OcrResult {
     std::string text;
-    /// Mean probability over the characters actually returned. Padding slots are excluded, so a
-    /// short plate is not flattered by the model's near-certain padding predictions.
+    /// Mean probability over the characters actually returned.
     float confidence{0.0F};
     /// Lowest per-character probability among the returned characters.
     float min_char_confidence{0.0F};
     std::vector<float> character_confidences;
-    /// Region head output, when the model has one. Diagnostic only; nothing depends on it.
+    /// Plate region the model reads, "kz". Diagnostic only; nothing depends on it.
     std::string region;
-    float region_confidence{0.0F};
     OcrRejection rejection{OcrRejection::kNone};
 
     [[nodiscard]] bool ok() const { return rejection == OcrRejection::kNone && !text.empty(); }
@@ -62,8 +59,7 @@ public:
     [[nodiscard]] virtual std::string modelDescription() const = 0;
 };
 
-/// Selects the configured OCR backend. Nomeroff is the production default; the legacy backend
-/// remains available for controlled A/B benchmarks until labelled KZ validation is complete.
+/// Builds the OCR stage: Nomeroff Net's Kazakhstan reader (`NomeroffOnnx`) from `ocr.model`.
 std::unique_ptr<IPlateOcr> makePlateOcr(const OcrConfig& ocr,
                                         const InferenceConfig& inference,
                                         PipelineMetrics* metrics, std::string& error);

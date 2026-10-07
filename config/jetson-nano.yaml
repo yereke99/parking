@@ -1,0 +1,120 @@
+# Jetson Nano 4 GB production profile: the YOLO plate detector and Nomeroff's Kazakhstan OCR both
+# run on the GPU through native TensorRT 8.2. `make run` replays video/parking.mp4;
+# `make camera CAMERA=rtsp://...` reads a live camera with the same settings.
+#
+# The detection and stop thresholds below were validated on the bundled clip. Re-check the ROIs
+# and the stop window against footage from the real barrier camera (docs/CAMERA_SETUP.md).
+
+camera:
+  # A file path, a numeric V4L2 device index, an rtsp:// URL or a GStreamer pipeline.
+  # `--source` on the command line replaces it.
+  source: video/parking.mp4
+  kind: auto
+  camera_id: gate-01
+  # Ask the RTSP stack for TCP. UDP loses packets under load and produces torn frames.
+  rtsp_tcp: true
+  capture_buffer_size: 1
+  reconnect_initial_backoff_ms: 500
+  reconnect_max_backoff_ms: 15000
+  read_timeout_ms: 5000
+  realtime_file: true
+  # A clip is processed frame by frame instead of dropping the frames that arrive while the
+  # pipeline is busy. Cameras and RTSP streams always keep only the newest frame.
+  process_every_file_frame: true
+
+inference:
+  # Native TensorRT 8.2. The detector refuses to start without it (strict_backend); the OCR
+  # falls back to the pinned ONNX Runtime CPU package only if TensorRT rejects its model.
+  backend: tensorrt
+  # FP16 for the detector. The OCR always builds an FP32 engine.
+  fp16: true
+  strict_backend: true
+  # Engines are built on the first start (a few minutes for the detector) and reused.
+  engine_cache_dir: var/trt_cache
+  intra_op_threads: 2
+  inter_op_threads: 1
+
+detector:
+  model: models/license_plate_detector.onnx
+  input_size: 640
+  confidence_threshold: 0.50
+  nms_threshold: 0.45
+  interval_idle_ms: 200
+  interval_approaching_ms: 100
+  interval_near_ms: 66
+  interval_recognition_ms: 40
+  interval_cooldown_ms: 300
+  require_motion_in_idle: false
+
+ocr:
+  # Nomeroff Net 4.0.1's Kazakhstan model, downloaded (SHA-256 checked) and exported to ONNX by
+  # the image build (tools/export_nomeroff_onnx.py).
+  model: /opt/kz-anpr/models/nomeroff-onnx/kz.onnx
+  min_confidence: 0.40
+  min_char_confidence: 0.20
+  max_attempts: 60
+
+quality:
+  # Below about 90x22 px a plate's characters are 6-8 px wide, too small to read reliably: a
+  # 66x20 crop of 152JTA02 was confirmed as 152JT02 with 60x18.
+  min_plate_width_px: 90
+  min_plate_height_px: 22
+  min_sharpness: 25.0
+  min_brightness: 25.0
+  max_brightness: 235.0
+  max_clipping_ratio: 0.30
+  min_score: 0.20
+
+stop_detection:
+  # Permissive: recognition starts once a tracked plate is near the barrier, even while the car
+  # is still rolling. The OCR size gate and the consensus decide when a plate is confirmed.
+  window_ms: 600
+  stop_duration_ms: 200
+  max_center_displacement_ratio: 10.0
+  max_size_change_ratio: 10.0
+  max_speed_px_per_s: 10000.0
+
+consensus:
+  min_samples: 3
+  # Three agreeing readings before a plate is confirmed.
+  required_votes: 3
+  min_agreement: 0.50
+  min_avg_confidence: 0.40
+  min_final_confidence: 0.45
+  allow_single_frame: false
+
+recognition:
+  timeout_ms: 30000
+  cooldown_ms: 2000
+  leave_confirmation_ms: 500
+  track_lost_timeout_ms: 1500
+  duplicate_suppression_ms: 10000
+
+validation:
+  # The two current Kazakhstan layouts; the 1993 layout is left out. Region codes and confusion
+  # maps are not listed, so the built-in Kazakhstan ones apply.
+  letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  formats:
+    - name: current_individual     # 123 ABC 02
+      pattern: DDDLLLRR
+    - name: current_legal_entity   # 123 AB 02
+      pattern: DDDLLRR
+  max_corrections: 2
+  high_confidence_threshold: 0.75
+
+debug:
+  visualize: false
+  # true saves every crop the OCR reads to var/debug/crops (the checkout is read-only in the
+  # container; var/ is not). Calibration only.
+  save_crops: false
+  output_dir: var/debug
+  max_files: 1000
+  frame_timeline: false
+
+performance:
+  opencv_threads: 1
+  frame_queue_size: 1
+  metrics_interval_ms: 0
+
+logging:
+  level: info

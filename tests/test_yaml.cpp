@@ -10,14 +10,14 @@ using anpr::yaml::asString;
 TEST("yaml parses nested mappings") {
     const auto result = anpr::yaml::parse(R"(
 camera:
-  source: video/car.mp4
+  source: video/parking.mp4
   fps: 25
 detector:
   intervals:
     idle_ms: 200
 )");
     CHECK(result.ok);
-    CHECK_EQ(asString(result.root.path("camera.source")).value_or(""), std::string("video/car.mp4"));
+    CHECK_EQ(asString(result.root.path("camera.source")).value_or(""), std::string("video/parking.mp4"));
     CHECK_EQ(asInt(result.root.path("camera.fps")).value_or(0), 25);
     CHECK_EQ(asInt(result.root.path("detector.intervals.idle_ms")).value_or(0), 200);
     CHECK(result.root.path("camera.missing") == nullptr);

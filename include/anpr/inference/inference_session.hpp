@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,9 +62,6 @@ struct SessionRequest {
     InferenceConfig inference;
     /// Names this session in log lines, for example "detector" or "ocr".
     std::string tag;
-    /// The session must accept a uint8 input tensor. OpenCV DNN and native TensorRT 8.2 cannot,
-    /// so they are skipped.
-    bool requires_uint8_input{false};
     /// Square input edge, used only by the OpenCV DNN fallback, which cannot read the ONNX
     /// input signature itself. ONNX Runtime takes the shape from the model.
     int input_size_hint{640};
@@ -75,21 +71,6 @@ struct SessionRequest {
 /// unless `inference.strict_backend` forbids it. Returns nullptr and fills `error` on failure.
 std::unique_ptr<IInferenceSession> createInferenceSession(const SessionRequest& request,
                                                           std::string& error);
-
-/// `onnx.TensorProto.DataType` codes returned by `onnxInputElementType`.
-constexpr int kOnnxFloat = 1;
-constexpr int kOnnxUint8 = 2;
-
-/// Element type of a model's image input, meaning its one graph input that is not an
-/// initializer, read straight from the ONNX protobuf so a caller can choose backends before any
-/// runtime loads the model. Returns std::nullopt and fills `error` when the file cannot be read,
-/// is not an ONNX model, or does not have exactly one such input.
-[[nodiscard]] std::optional<int> onnxInputElementType(const std::string& model_path,
-                                                      std::string& error);
-
-/// The same over model bytes already in memory.
-[[nodiscard]] std::optional<int> onnxInputElementTypeOf(const std::string& model_bytes,
-                                                        std::string& error);
 
 /// True when this build links ONNX Runtime.
 [[nodiscard]] bool onnxRuntimeAvailable();

@@ -19,10 +19,10 @@ struct CtcReading {
     float min_char_confidence{0.0F};
 };
 
-/// Greedy CTC decoding of `steps` x `classes` logits for one crop, as the `nomeroff` worker does
-/// it: softmax per step, argmax, repeated classes collapse, blanks are dropped (a blank between
-/// two equal classes keeps both characters). A character's confidence is the highest
-/// probability among the steps that emitted it, so a long run does not inflate the mean.
+/// Greedy CTC decoding of `steps` x `classes` logits for one crop: softmax per step, argmax,
+/// repeated classes collapse, blanks are dropped (a blank between two equal classes keeps both
+/// characters). A character's confidence is the highest probability among the steps that
+/// emitted it, so a long run does not inflate the mean.
 CtcReading decodeGreedy(const float* logits, int steps, int classes, const std::string& letters);
 
 }  // namespace nomeroff

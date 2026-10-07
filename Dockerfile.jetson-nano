@@ -1,53 +1,33 @@
-# Jetson Nano 4 GB / JetPack 4.6.x / L4T R32.7.x only. Build this image on the Jetson.
-# The digest prevents a future tag change from silently replacing CUDA 10.2, PyTorch 1.10,
-# OpenCV 4.5 or the JetPack Python 3.6 ABI.
+# Jetson Nano 4 GB / JetPack 4.6.x / L4T R32.7.x only. Build this image on the Jetson:
+#   make docker-build
+# The digest pins CUDA 10.2, PyTorch 1.10, OpenCV 4.5 and the JetPack Python 3.6 ABI.
 #
 # CUDA, cuDNN and TensorRT are deliberately NOT installed in this image. On JetPack 4 the NVIDIA
 # container runtime bind-mounts the host's copies (libraries, headers, nvcc) read-only into every
 # container, and into every RUN step when Docker's default runtime is nvidia. dpkg cannot install
-# those packages over the mounts ("Read-only file system", "Invalid cross-device link"), so the
-# builder compiles against the mounted host files and `docker run --runtime nvidia` supplies the
-# same libraries at run time. tools/jetson_docker.sh checks both preconditions before building.
+# those packages over the mounts, so the builder compiles against the mounted host files and
+# `docker run --runtime nvidia` supplies the same libraries at run time.
+# tools/jetson_docker.sh checks both preconditions before building.
 ARG L4T_ML_IMAGE=nvcr.io/nvidia/l4t-ml:r32.7.1-py3@sha256:238be76a09a10904b6b9d3cfca5cd2b34c369a3c3c99340050f825998f552a5b
 
+# --------------------------------------------------------------------------------------------
+# C++ build: kz_anpr, kz_anpr_benchmark and their unit tests.
+# --------------------------------------------------------------------------------------------
 FROM ${L4T_ML_IMAGE} AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ONNXRUNTIME_VERSION=1.11.1
 ARG ONNXRUNTIME_SHA256=bb9ca658a6a0acc7b9e4288647277a9ce9d86b063a2403a51d5c0d2e4df43603
-ARG PYTHON_VERSION=3.9.25
-ARG PYTHON_SHA256=00e07d7c0f2f0cc002432d1ee84d2a40dae404a99303e3f97701c10966c91834
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         build-essential ca-certificates cmake curl pkg-config \
-        libbz2-dev libffi-dev liblzma-dev libreadline-dev libsqlite3-dev libssl-dev \
-        uuid-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
 
-# Ubuntu 18.04 in JetPack 4 has no supported Python 3.9 package. Build the final 3.9 security
-# release once in the image builder (single job, no PGO/LTO) and copy only its installed runtime.
-# NVIDIA PyTorch remains isolated on /usr/bin/python3 (3.6) because its wheel is ABI-specific.
-RUN fetch-verified \
-        "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
-        "${PYTHON_SHA256}" /tmp/python.tar.xz \
-    && mkdir -p /tmp/python-src \
-    && tar -xJf /tmp/python.tar.xz -C /tmp/python-src --strip-components=1 \
-    && cd /tmp/python-src \
-    && ./configure --prefix=/opt/python3.9 --with-ensurepip=install \
-    && make -j1 \
-    && make altinstall \
-    && ln -s python3.9 /opt/python3.9/bin/python3 \
-    && ln -s python3.9 /opt/python3.9/bin/python \
-    && /opt/python3.9/bin/python3.9 --version \
-    && cd / \
-    && rm -rf /tmp/python.tar.xz /tmp/python-src
-
-# Microsoft publishes an aarch64 CPU C/C++ package for ORT 1.11.1. It is used only by the legacy
-# uint8 Fast Plate OCR model. The detector is compiled against the host's native TensorRT 8.2 and
-# CUDA 10.2 libraries, avoiding a large device-local ONNX Runtime build.
+# Microsoft's aarch64 CPU package of ONNX Runtime: only the fallback for a model TensorRT refuses.
+# The detector and the OCR run on the host's native TensorRT 8.2 and CUDA 10.2.
 RUN fetch-verified \
         "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-aarch64-${ONNXRUNTIME_VERSION}.tgz" \
         "${ONNXRUNTIME_SHA256}" /tmp/onnxruntime.tgz \
@@ -55,15 +35,13 @@ RUN fetch-verified \
     && tar -xzf /tmp/onnxruntime.tgz -C /opt/onnxruntime --strip-components=1 \
     && rm /tmp/onnxruntime.tgz
 
-# Only the C++ build and test inputs: edits to Python tools, requirements or this Dockerfile must
-# not invalidate the single-job C++ build.
+# Only the C++ build and test inputs, so edits elsewhere do not invalidate the single-job build.
 WORKDIR /src
 COPY CMakeLists.txt /src/
 COPY include /src/include
 COPY src /src/src
 COPY tests /src/tests
 COPY config /src/config
-COPY models/plate_ocr_config.yaml /src/models/plate_ocr_config.yaml
 RUN mkdir -p /tmp/build \
     && cd /tmp/build \
     && cmake /src \
@@ -75,123 +53,24 @@ RUN mkdir -p /tmp/build \
     && cmake --build . -- -j1 \
     && ctest --output-on-failure
 
-# scikit-image 0.17.2 is the last Python 3.6 release. Bionic's 0.13.1 imports NumPy's
-# removed _validate_lengths function, and PyPI has no cp36/aarch64 wheel for 0.17.2.
-# Build a wheel against the SAME L4T NumPy as runtime, without pip dependency resolution
-# or build isolation (which would install a different NumPy). Keep compilers out of runtime.
-FROM ${L4T_ML_IMAGE} AS ocr-builder
-
-ARG DEBIAN_FRONTEND=noninteractive
-ARG SKIMAGE_SHA256=bd954c0588f0f7e81d9763dc95e06950e68247d540476e06cb77bcbcd8c2d8b3
-
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
-        build-essential ca-certificates curl python3-dev python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
-COPY tools/docker/fetch-wheels.sh /usr/local/bin/fetch-wheels
-COPY requirements/jetson-nano-build.lock /tmp/jetson-nano-build.lock
-COPY requirements/jetson-nano-build-wheels.txt /tmp/jetson-nano-build-wheels.txt
-# Build tools come from the retrying wheelhouse too; pip only installs local files.
-RUN fetch-wheels /tmp/jetson-nano-build-wheels.txt /tmp/wheelhouse \
-    && /usr/bin/python3 -m pip install --no-cache-dir --no-index --find-links /tmp/wheelhouse \
-        --no-deps --require-hashes --only-binary=:all: --ignore-installed \
-        -r /tmp/jetson-nano-build.lock \
-    && rm -rf /tmp/wheelhouse \
-    && /usr/bin/python3 -c 'import numpy; assert numpy.__version__ == "1.19.5"' \
-    && fetch-verified \
-        https://files.pythonhosted.org/packages/source/s/scikit-image/scikit-image-0.17.2.tar.gz \
-        "${SKIMAGE_SHA256}" /tmp/scikit-image.tar.gz \
-    && mkdir -p /tmp/scikit-image /opt/ocr-wheels \
-    && tar -xzf /tmp/scikit-image.tar.gz -C /tmp/scikit-image --strip-components=1
-
-# Upstream 0.17.2 uses multiprocessing.cpu_count() for Cython regardless of build_ext's
-# parallel setting. Limit both Cython and C compilation to one job on the 4 GB Nano.
-WORKDIR /tmp/scikit-image
-RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 NPY_NUM_BUILD_JOBS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
-    /usr/bin/python3 -c 'import multiprocessing, runpy, sys; multiprocessing.cpu_count = lambda: 1; sys.argv = ["setup.py", "build_ext", "--parallel=1", "bdist_wheel", "--dist-dir=/opt/ocr-wheels"]; runpy.run_path("setup.py", run_name="__main__")'
-
+# --------------------------------------------------------------------------------------------
+# Runtime: the two binaries, the ONNX Runtime fallback and Nomeroff's Kazakhstan OCR model.
+# --------------------------------------------------------------------------------------------
 FROM ${L4T_ML_IMAGE} AS runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG EASYOCR_MODEL_SHA256=1b5eaebf1c062de6205560c97ffcfa8dc0e6f413c340e8adc5cfc57e159f61ff
-ARG FAST_PLATE_OCR_SHA256=384bbbd2cea3ef54761d3df70822ef3a349ee1a112aeafddbe0e3ba06bc6e47b
-ARG PIP_SHA256=deaf32dcd9ab821e359cd8330786bcd077604b5c5730c0b096eda46f95c24a2d
+ARG NOMEROFF_KZ_SHA256=b8d09e77dc0d212cf4a9f266e2ba2b18bd655dfcb45582195d64d647ca37ac28
 
-# Ubuntu packages only: CUDA, cuDNN and TensorRT come from the host at run time (see the top).
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
-        ca-certificates curl libbz2-1.0 libffi6 libgomp1 liblzma5 libreadline7 libsqlite3-0 \
-        libssl1.1 libuuid1 procps python3-pip unzip zlib1g \
+    && apt-get install --no-install-recommends -y ca-certificates curl libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
-
-# pip's own downloader (15 s read timeout, no retry inside a transfer) fails on the Nano's
-# connection. Download pip and every pinned wheel with fetch-verified's retries and SHA-256
-# check first; everything below installs offline. Regenerate the manifest when the lock changes:
-#   tools/docker/wheel_manifest.py requirements/jetson-nano.lock > requirements/jetson-nano-wheels.txt
-COPY tools/docker/fetch-wheels.sh /usr/local/bin/fetch-wheels
-COPY requirements/jetson-nano-wheels.txt /tmp/jetson-nano-wheels.txt
-RUN mkdir -p /tmp/wheelhouse \
-    && fetch-verified \
-        https://files.pythonhosted.org/packages/a4/6d/6463d49a933f547439d6b5b98b46af8742cc03ae83543e4d7688c2420f8b/pip-21.3.1-py3-none-any.whl \
-        "${PIP_SHA256}" /tmp/wheelhouse/pip-21.3.1-py3-none-any.whl \
-    && fetch-wheels /tmp/jetson-nano-wheels.txt /tmp/wheelhouse
-
-COPY requirements/jetson-nano.lock /tmp/jetson-nano.lock
-COPY --from=ocr-builder /opt/ocr-wheels/ /tmp/ocr-wheels/
-# The base image's Debian python3-yaml (pulled in by llvm-9-dev) is a distutils install that
-# upstream pip cannot uninstall. Install the pinned set alongside the Debian copies instead:
-# /usr/local/lib/python3.6/dist-packages precedes /usr/lib/python3/dist-packages on sys.path.
-RUN python3 -m pip install --no-index /tmp/wheelhouse/pip-21.3.1-py3-none-any.whl \
-    && python3 -m pip install --no-cache-dir --no-index --find-links /tmp/wheelhouse \
-        --no-deps --require-hashes --ignore-installed -r /tmp/jetson-nano.lock \
-    && python3 -m pip install --no-cache-dir --no-deps --no-index --ignore-installed \
-        /tmp/ocr-wheels/scikit_image-0.17.2-*.whl \
-    && rm -rf /tmp/wheelhouse /tmp/ocr-wheels /tmp/jetson-nano.lock /tmp/jetson-nano-wheels.txt \
-    && python3 -c 'import easyocr, numpy, scipy, skimage; from skimage import io; from skimage.util import crop; assert easyocr.__version__ == "1.6.2"; assert skimage.__version__ == "0.17.2"; assert numpy.__version__ == "1.19.5"; assert scipy.__version__ == "1.5.4"; assert crop(numpy.zeros((4, 4)), 1).shape == (2, 2)'
-
-# Recognition-only EasyOCR needs only the 14 MB English recognizer, not the large CRAFT detector.
-# The hash is checked at image build and runtime downloads remain disabled.
-RUN mkdir -p /opt/kz-anpr/models/research/easyocr \
-    && fetch-verified \
-        https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.zip \
-        "${EASYOCR_MODEL_SHA256}" /tmp/english_g2.zip \
-    && unzip -q /tmp/english_g2.zip -d /opt/kz-anpr/models/research/easyocr \
-    && rm /tmp/english_g2.zip
-
-# Fast Plate OCR's cct-s-v2-global model, the pair of models/plate_ocr_config.yaml. Downloaded into
-# the image so the Jetson needs no hand-copied models/plate_ocr.onnx.
-RUN mkdir -p /opt/kz-anpr/models/fast-plate-ocr \
-    && fetch-verified \
-        https://github.com/ankandrew/fast-plate-ocr/releases/download/arg-plates/cct_s_v2_global.onnx \
-        "${FAST_PLATE_OCR_SHA256}" /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx
-
-# The `easyocr_onnx` backend runs the same recognizer inside the C++ process on TensorRT, without
-# a PyTorch worker. Export it from the verified weights with this image's PyTorch 1.10.
-COPY tools/export_easyocr_onnx.py /opt/kz-anpr/tools/
-RUN /usr/bin/python3 /opt/kz-anpr/tools/export_easyocr_onnx.py \
-        --weights /opt/kz-anpr/models/research/easyocr/english_g2.pth \
-        --output-dir /opt/kz-anpr/models/easyocr-onnx
-
-# TensorRT 8.2 has no uint8 tensors, so it cannot load the Fast Plate OCR model as published.
-# Retype its one uint8 input to float32 (a one-byte patch; the model's first node already casts
-# to float32), so `fast_plate_ocr` runs on TensorRT. The original stays for comparison.
-COPY tools/convert_fast_plate_ocr.py /opt/kz-anpr/tools/
-RUN /usr/bin/python3 /opt/kz-anpr/tools/convert_fast_plate_ocr.py \
-        /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx \
-        /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global_float.onnx
-
-# Nomeroff Net 4.0.1's dedicated Kazakhstan OCR ("kz", model card nomeroff-net-ocr-kz/model-4.json)
-# for the default `nomeroff_onnx` backend. Nomeroff itself needs Python >= 3.9 and PyTorch >= 1.12,
-# so the small network is rebuilt and exported with this image's PyTorch 1.10 and then runs in the
-# C++ process on TensorRT. The checkpoint is only needed for the export.
-# nomeroff.net.ua resets long transfers to the Nano, so the download resumes where it stopped.
-# A copy placed at models/nomeroff/anpr_ocr_kz_2022_11_14.ckpt in the checkout is used instead when
+# Nomeroff Net 4.0.1's Kazakhstan text reader ("kz", model card nomeroff-net-ocr-kz/model-4.json).
+# Nomeroff itself needs Python >= 3.9 and PyTorch >= 1.12, so the small network is rebuilt and
+# exported to ONNX with this image's PyTorch 1.10 and runs in the C++ process on TensorRT.
+# nomeroff.net.ua resets long transfers to the Nano, so the download resumes where it stopped. A
+# copy placed at models/nomeroff/anpr_ocr_kz_2022_11_14.ckpt in the checkout is used instead when
 # its SHA-256 matches (the script is listed too, so the wildcard may match nothing).
-ARG NOMEROFF_KZ_SHA256=b8d09e77dc0d212cf4a9f266e2ba2b18bd655dfcb45582195d64d647ca37ac28
 COPY tools/docker/fetch-resumable.sh models/nomeroff/*.ckpt /tmp/nomeroff/
 COPY tools/export_nomeroff_onnx.py /opt/kz-anpr/tools/
 RUN sh /tmp/nomeroff/fetch-resumable.sh \
@@ -204,27 +83,16 @@ RUN sh /tmp/nomeroff/fetch-resumable.sh \
     && rm -rf /tmp/anpr_ocr_kz_2022_11_14.ckpt /tmp/nomeroff
 
 COPY --from=builder /opt/onnxruntime/lib/ /opt/onnxruntime/lib/
-COPY --from=builder /opt/python3.9/ /opt/python3.9/
 COPY --from=builder /tmp/build/kz_anpr /opt/kz-anpr/bin/kz_anpr
 COPY --from=builder /tmp/build/kz_anpr_benchmark /opt/kz-anpr/bin/kz_anpr_benchmark
-COPY tools/jetson_preflight.py tools/benchmark.py tools/nomeroff_worker.py \
-     tools/research_ocr_worker.py /opt/kz-anpr/tools/
 
 ENV LD_LIBRARY_PATH=/opt/onnxruntime/lib:${LD_LIBRARY_PATH} \
-    PATH=/opt/python3.9/bin:${PATH} \
-    KZ_ANPR_EASYOCR_PYTHON=/usr/bin/python3 \
-    KZ_ANPR_NOMEROFF_PYTHON=/usr/bin/python3 \
-    KZ_ANPR_PADDLEOCR_PYTHON=/usr/bin/python3 \
-    PYTHONUNBUFFERED=1 \
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
     MKL_NUM_THREADS=1
 
-# Load the bundled recognizer and run the worker's warmup on CPU during the build.
-# --serve disables downloads and EOF exits after READY; GPU validation remains in preflight.
-RUN /usr/bin/python3 /opt/kz-anpr/tools/research_ocr_worker.py \
-    --serve --engine easyocr --device cpu \
-    --model-cache /opt/kz-anpr/models/research </dev/null
+# tools/jetson_docker.sh refuses to run an image built from an older checkout layout.
+LABEL kz-anpr.layout="production-1"
 
 WORKDIR /workspace
-CMD ["/opt/python3.9/bin/python3.9", "/opt/kz-anpr/tools/jetson_preflight.py"]
+CMD ["/opt/kz-anpr/bin/kz_anpr", "--config", "/workspace/config/jetson-nano.yaml"]

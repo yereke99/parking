@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Export Nomeroff Net's Kazakhstan plate OCR model to ONNX for the C++ runtime.
 
-Nomeroff 4.0.1 needs Python >= 3.9 and PyTorch >= 1.12, which JetPack 4 cannot provide, so the
-`nomeroff` worker cannot run on the Jetson Nano. Its "kz" text reader is a small network, though:
+Nomeroff 4.0.1 needs Python >= 3.9 and PyTorch >= 1.12, which JetPack 4 cannot provide, so
+Nomeroff Net itself cannot run on the Jetson Nano. Its "kz" text reader is a small network, though:
 a ResNet-18 trunk up to layer3, a linear layer, two bidirectional LSTMs and a linear CTC head
 (NPOcrNet in nomeroff_net/nnmodels/ocr_model.py). This script rebuilds that network with the
 image's own PyTorch 1.10, loads Nomeroff's published checkpoint and writes a batch-1 ONNX model,
-which the `nomeroff_onnx` backend runs in-process on TensorRT.
+which the C++ runtime runs on TensorRT. Only `torch` is needed: the ResNet-18 trunk is written out
+here (with torchvision's layer names) instead of importing torchvision.
 
 The settings are Nomeroff's model card for "kz"
 (https://models.vsp.net.ua/config_model/nomeroff-net-ocr-kz/model-4.json): resnet18 backbone,
@@ -25,7 +26,6 @@ import tempfile
 
 import torch
 from torch import nn
-from torchvision.models import resnet18
 
 HEIGHT = 50
 WIDTH = 200
@@ -34,6 +34,45 @@ LINEAR_SIZE = 512
 HIDDEN_SIZE = 32
 LETTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 CLASSES = len(LETTERS) + 1  # the CTC blank is class 0
+
+
+class BasicBlock(nn.Module):
+    """torchvision's ResNet BasicBlock: two 3x3 convolutions and a shortcut."""
+
+    def __init__(self, inplanes, planes, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, 3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(planes, planes, 3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = None
+        if stride != 1 or inplanes != planes:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(inplanes, planes, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes))
+
+    def forward(self, x):
+        identity = x if self.downsample is None else self.downsample(x)
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return self.relu(out + identity)
+
+
+def resnet18_trunk():
+    """resnet18 without layer4, avgpool and fc: `list(resnet18().children())[:-3]` in Nomeroff."""
+    def layer(inplanes, planes, stride):
+        return nn.Sequential(BasicBlock(inplanes, planes, stride), BasicBlock(planes, planes))
+
+    return nn.Sequential(
+        nn.Conv2d(CHANNELS, 64, 7, stride=2, padding=3, bias=False),
+        nn.BatchNorm2d(64),
+        nn.ReLU(inplace=True),
+        nn.MaxPool2d(3, stride=2, padding=1),
+        layer(64, 64, 1),
+        layer(64, 128, 2),
+        layer(128, 256, 2),
+    )
 
 
 class BlockRNN(nn.Module):
@@ -56,7 +95,7 @@ class NomeroffKzOcr(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.conv_nn = nn.Sequential(*list(resnet18(pretrained=False).children())[:-3])
+        self.conv_nn = resnet18_trunk()
         with torch.no_grad():
             _, channels, height, width = self.conv_nn(
                 torch.zeros(1, CHANNELS, HEIGHT, WIDTH)).shape

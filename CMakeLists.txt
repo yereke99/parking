@@ -49,7 +49,6 @@ add_library(kz_anpr_core
     src/common/logging.cpp
     src/common/metrics.cpp
     src/common/yaml.cpp
-    src/ocr/easyocr_decoding.cpp
     src/ocr/nomeroff_decoding.cpp
     src/pipeline/plate_consensus.cpp
     src/pipeline/recognition_event.cpp
@@ -83,12 +82,8 @@ if(KZ_ANPR_BUILD_RUNTIME)
             src/detection/plate_detector.cpp
             src/inference/inference_session.cpp
             src/inference/opencv_dnn_session.cpp
-            src/ocr/easyocr_onnx.cpp
-            src/ocr/fast_plate_ocr.cpp
-            src/ocr/nomeroff_ocr.cpp
             src/ocr/nomeroff_onnx.cpp
             src/ocr/plate_ocr.cpp
-            src/ocr/research_ocr.cpp
             src/pipeline/anpr_pipeline.cpp
             src/pipeline/motion_detector.cpp
             src/pipeline/quality_assessor.cpp
@@ -121,10 +116,8 @@ if(KZ_ANPR_BUILD_RUNTIME)
         else()
             message(WARNING
                 "ONNX Runtime not found. Building without the ONNX Runtime backends. "
-                "Native TensorRT may still be enabled below. "
-                "The default Nomeroff OCR worker remains usable; the legacy Fast Plate OCR "
-                "comparison backend will refuse to start because OpenCV DNN cannot supply its "
-                "uint8 input tensor.")
+                "Native TensorRT may still be enabled below; without it only OpenCV DNN is "
+                "left, which is a development last resort.")
         endif()
 
         set(KZ_ANPR_TENSORRT_FOUND OFF)
@@ -209,8 +202,8 @@ if(KZ_ANPR_BUILD_TESTS)
         tests/test_main.cpp
         tests/test_config.cpp
         tests/test_consensus.cpp
-        tests/test_easyocr_decoding.cpp
         tests/test_nomeroff_decoding.cpp
+        tests/test_recognition_event.cpp
         tests/test_state_machine.cpp
         tests/test_tracking.cpp
         tests/test_validation.cpp
@@ -226,9 +219,7 @@ if(KZ_ANPR_BUILD_TESTS)
     if(TARGET kz_anpr_runtime)
         add_executable(kz_anpr_runtime_tests
             tests/test_main.cpp
-            tests/test_fast_plate_input.cpp
             tests/test_nomeroff_onnx.cpp
-            tests/test_ocr_decoding.cpp
             tests/test_quality.cpp
         )
         target_link_libraries(kz_anpr_runtime_tests PRIVATE kz_anpr_runtime)

@@ -120,12 +120,6 @@ private:
 
 std::unique_ptr<IInferenceSession> createOpenCvDnnSession(const SessionRequest& request,
                                                           std::string& error) {
-    if (request.requires_uint8_input) {
-        error =
-            "the OpenCV DNN backend cannot feed a uint8 tensor, which this model requires; build "
-            "with ONNX Runtime";
-        return nullptr;
-    }
     if (!filesystem::exists(request.model_path)) {
         error = "model not found: " + request.model_path;
         return nullptr;

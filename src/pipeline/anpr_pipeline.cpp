@@ -23,6 +23,11 @@ std::int64_t monotonicMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
 }
 
+std::int64_t unixTimeMs() {
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
 cv::Rect toRect(const BoundingBox& box) {
     return cv::Rect(box.x, box.y, box.width, box.height);
 }
@@ -347,6 +352,7 @@ void AnprPipeline::finishRecognition(std::int64_t now_ms, bool timed_out) {
     event.raw_plate = result.raw_plate;
     event.confidence = result.confidence;
     event.timestamp_ms = now_ms;
+    event.unix_time_ms = unixTimeMs();
     event.plate_box = result.plate_box;
     event.camera_id = config_.camera.camera_id;
     event.region_code = result.region_code;

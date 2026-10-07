@@ -1,13 +1,14 @@
-# Kazakhstan parking ANPR runtime configuration.
+# Kazakhstan parking ANPR configuration for a development machine (ONNX Runtime on the CPU), with
+# every key documented. The Jetson Nano uses config/jetson-nano.yaml; the recognition thresholds
+# here are the same ones, validated on video/parking.mp4.
 #
 # Every operational threshold lives here. Nothing in the pipeline carries an unexplained
-# constant. Values below are starting points tuned against video/car.mp4 on a development
-# machine, not universal deployment values: re-tune the ROIs, the motion thresholds and the
-# stop window against footage from the actual barrier.
+# constant. Re-tune the ROIs, the motion thresholds and the stop window against footage from the
+# actual barrier (docs/CAMERA_SETUP.md).
 
 camera:
   # A file path, a numeric device index, an rtsp:// URL, or a full GStreamer pipeline.
-  source: video/car.mp4
+  source: video/parking.mp4
   # auto | file | device | rtsp | gstreamer. auto infers from the source string.
   kind: auto
   camera_id: gate-01
@@ -27,6 +28,9 @@ camera:
   # Replay video files at their own frame rate rather than as fast as they decode, so pointing
   # the application at a clip behaves like a camera. The benchmark tool is unaffected.
   realtime_file: true
+  # A clip is processed frame by frame instead of dropping the frames that arrive while the
+  # pipeline is busy. Cameras and RTSP streams always keep only the newest frame.
+  process_every_file_frame: true
 
 inference:
   # auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
@@ -35,9 +39,9 @@ inference:
   device_id: 0
   # FP16 for the TensorRT provider. Ignored elsewhere.
   fp16: true
-  # Serialised TensorRT engines. Built once by tools/build_trt_engines.sh, reused afterwards,
+  # Serialised TensorRT engines. Built on the first start (or `kz_anpr --warmup`) and reused,
   # so a normal start does not pay the engine build cost.
-  engine_cache_dir: models/trt_cache
+  engine_cache_dir: var/trt_cache
   # Fail startup rather than silently falling back to a slower provider.
   strict_backend: false
   # ONNX Runtime thread pools. These only matter for the CPU fallback: on Jetson the detector
@@ -96,56 +100,34 @@ detector:
   interval_near_ms: 66           # ~15 FPS
   interval_recognition_ms: 40    # 25 FPS during the OCR burst
   interval_cooldown_ms: 300      # just enough to notice the vehicle leaving
-  # Skip the detector entirely while idle until the motion detector sees something.
-  require_motion_in_idle: true
+  # true skips the detector while idle until the motion detector sees something. false keeps
+  # the idle cadence anyway, so a vehicle the motion check misses is still found.
+  require_motion_in_idle: false
 
 ocr:
-  # Primary OCR backend. `fast_plate_ocr` remains available only for measured A/B comparison.
-  backend: nomeroff
-  # Nomeroff Net 4.0.1 at pinned commit 931388550b83 runs in one persistent isolated Python
-  # worker shared by every stream.
-  python_executable: .venv-nomeroff/bin/python
-  worker_script: tools/nomeroff_worker.py
-  model_cache_dir: models/nomeroff
-  device: auto                    # CUDA -> tested MPS -> CPU
-  region_mode: kz                 # explicit kz | ru | by | kg | su
-  lines_count: 1                  # set 2 only for known box/two-line camera lanes
-  fp16: true                      # used only on CUDA after a successful warm-up
-  startup_timeout_ms: 180000      # model load; normal OCR requests use the shorter timeout below
-  request_timeout_ms: 10000
-
-  # Research-only crop recognizers. Each runs in a persistent isolated worker and is shared by
-  # all camera pipelines. Install them with tools/setup_research_ocr_envs.sh; production keeps
-  # using Nomeroff unless an on-device benchmark justifies a change.
-  research_worker_script: tools/research_ocr_worker.py
-  research_model_cache_dir: models/research
-  paddle_python_executable: .venv-paddleocr/bin/python
-  paddle_model: eslav_PP-OCRv5_mobile_rec
-  paddle_engine: onnxruntime
-  easyocr_python_executable: .venv-easyocr/bin/python
-  easyocr_languages: en
-  easyocr_onnx_dir: models/easyocr-onnx
-
-  # Legacy Fast Plate OCR model contract, read only when backend=fast_plate_ocr.
-  model: models/plate_ocr.onnx
-  plate_config: models/plate_ocr_config.yaml
+  # Nomeroff Net 4.0.1's Kazakhstan text reader as ONNX. Make it once with
+  #   python3 tools/export_nomeroff_onnx.py --checkpoint anpr_ocr_kz_2022_11_14.ckpt \
+  #       --output models/nomeroff-onnx/kz.onnx
+  # (the Jetson image does this itself; see models/README.md).
+  model: models/nomeroff-onnx/kz.onnx
   # Mean character confidence a reading needs before it reaches the validator.
-  min_confidence: 0.55
+  min_confidence: 0.40
   # A reading containing any character below this is discarded.
-  min_char_confidence: 0.30
+  min_char_confidence: 0.20
   # Hard ceiling on OCR calls per recognition session.
-  max_attempts: 12
+  max_attempts: 60
 
 quality:
-  # Hard gates. A crop failing any of these never reaches OCR.
+  # Hard gates. A crop failing any of these never reaches OCR. Below about 90x22 px a plate's
+  # characters are 6-8 px wide, too small to read reliably.
   min_plate_width_px: 90
   min_plate_height_px: 22
-  min_sharpness: 45.0
-  min_brightness: 35.0
-  max_brightness: 225.0
-  max_clipping_ratio: 0.22
+  min_sharpness: 25.0
+  min_brightness: 25.0
+  max_brightness: 235.0
+  max_clipping_ratio: 0.30
   # Combined score a crop must reach to be worth an OCR call.
-  min_score: 0.30
+  min_score: 0.20
   # Reference values that normalise the individual scores into [0, 1].
   sharpness_reference: 160.0
   contrast_reference: 48.0
@@ -165,35 +147,41 @@ tracking:
   box_smoothing: 0.55
 
 stop_detection:
+  # Permissive: recognition starts once a tracked plate is near the barrier, even while the car
+  # is still rolling, and the OCR size gate and the consensus decide when a plate is confirmed.
+  # For a strict "stopped" condition use about 500 ms, 0.18, 0.12 and 40 px/s.
   # Rolling window over which movement is measured.
   window_ms: 600
   # Movement must stay under all three limits for this long to count as stopped.
-  stop_duration_ms: 500
+  stop_duration_ms: 200
   # Centre displacement across the window, relative to the plate box width.
-  max_center_displacement_ratio: 0.18
+  max_center_displacement_ratio: 10.0
   # Relative plate width change across the window.
-  max_size_change_ratio: 0.12
-  max_speed_px_per_s: 40.0
+  max_size_change_ratio: 10.0
+  max_speed_px_per_s: 10000.0
 
 consensus:
   min_samples: 3
+  # Three agreeing readings before a plate is confirmed.
   required_votes: 3
-  min_agreement: 0.60
-  min_avg_confidence: 0.65
-  min_final_confidence: 0.68
+  min_agreement: 0.50
+  min_avg_confidence: 0.40
+  min_final_confidence: 0.45
   # A single frame is never enough unless this is explicitly turned on.
   allow_single_frame: false
   single_frame_confidence: 0.95
 
 recognition:
-  timeout_ms: 3000
-  cooldown_ms: 4000
-  leave_confirmation_ms: 800
+  timeout_ms: 30000
+  cooldown_ms: 2000
+  leave_confirmation_ms: 500
   track_lost_timeout_ms: 1500
   duplicate_suppression_ms: 10000
 
 validation:
-  profile: auto                  # built-in KZ/RU; use custom with audited BY/KG/SU formats
+  # The built-in Kazakhstan rules are the defaults. Each list given here (formats, regions,
+  # digit_confusions, letter_confusions) replaces the built-in one; a list left out keeps it.
+  # The built-in formats also accept the 1993 layout; the list below does not.
   letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
   # Slot classes: D digit, L letter from `letters`, R region-code digit checked against
   # `regions`. Add a layout here rather than changing code.
@@ -206,10 +194,11 @@ validation:
       pattern: DDDLLRR
       allow_corrections: true
       weight: 1.0
-    - name: legacy_1993            # A 123 BCD
-      pattern: LDDDLLL
-      allow_corrections: true
-      weight: 0.9
+    # The 1993 layout, A 123 BCD. Off: neither profile has been checked against it.
+    # - name: legacy_1993
+    #   pattern: LDDDLLL
+    #   allow_corrections: true
+    #   weight: 0.9
   regions:
     "01": Astana
     "02": Almaty
@@ -253,7 +242,7 @@ validation:
   # Corrections allowed in one reading before it is called ambiguous instead of repaired.
   max_corrections: 2
   # OCR confidence a corrected reading needs to still count as high confidence.
-  high_confidence_threshold: 0.80
+  high_confidence_threshold: 0.75
   # Confidence multiplier by number of corrections: none, one, two or more.
   correction_multipliers: [1.0, 0.92, 0.82]
 

@@ -1,27 +1,28 @@
+# Live-camera ANPR on the Jetson Nano, in the Docker image built by `make docker-build`.
+# Installed by tools/install_service.sh (`make service CAMERA=...`), which fills in the checkout
+# path and the user and writes the camera to /etc/default/kz-anpr (root-only: it may hold a
+# password).
 [Unit]
 Description=Kazakhstan parking ANPR
-After=network-online.target
+Requires=docker.service
+After=docker.service network-online.target
 Wants=network-online.target
+# Never give up: a camera that is still booting only means another attempt 10 s later.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=kz-anpr
-Group=kz-anpr
-SupplementaryGroups=video
-ExecStart=/opt/kz-anpr/bin/kz_anpr --config /etc/kz-anpr/default.yaml
-Restart=on-failure
-RestartSec=5s
-StartLimitIntervalSec=120
-StartLimitBurst=5
-WorkingDirectory=/opt/kz-anpr
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/var/lib/kz-anpr
-KillSignal=SIGTERM
-TimeoutStopSec=10
+User=@USER@
+WorkingDirectory=@PROJECT_DIR@
+EnvironmentFile=/etc/default/kz-anpr
+Environment=KZ_ANPR_CONTAINER=kz-anpr
+# A container left behind by a power cut would block the name.
+ExecStartPre=-/usr/bin/docker rm -f kz-anpr
+ExecStart=@PROJECT_DIR@/tools/jetson_docker.sh run --source ${CAMERA} --camera-id ${CAMERA_ID} --events-file var/events.jsonl
+ExecStopPost=-/usr/bin/docker rm -f kz-anpr
+Restart=always
+RestartSec=10s
+TimeoutStopSec=30s
 
 [Install]
 WantedBy=multi-user.target
-

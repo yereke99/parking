@@ -12,7 +12,8 @@ enum class LogLevel { kError = 0, kWarn = 1, kInfo = 2, kDebug = 3 };
 std::string toString(LogLevel level);
 LogLevel logLevelFromString(const std::string& text, LogLevel fallback);
 
-/// Structured single-line logger. One event per line, `key=value` fields, monotonic timestamp.
+/// Structured single-line logger on stderr. One event per line, `key=value` fields, monotonic
+/// timestamp. stdout is reserved for the JSON recognition events.
 /// Events are named, never free text, so downstream log processing stays stable.
 /// Nothing here is called per frame; the pipeline logs state transitions and recognition steps.
 class Logger {

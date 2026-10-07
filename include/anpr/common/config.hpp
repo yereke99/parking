@@ -13,7 +13,7 @@ namespace anpr {
 enum class CameraKind { kAuto, kFile, kDevice, kRtsp, kGStreamer };
 
 struct CameraConfig {
-    std::string source{"video/car.mp4"};
+    std::string source{"video/parking.mp4"};
     CameraKind kind{CameraKind::kAuto};
     std::string camera_id{"gate-01"};
     int width{1920};
@@ -53,7 +53,7 @@ struct InferenceConfig {
     bool fp16{true};
     /// Directory holding serialised TensorRT engines. Engines are built once by the
     /// model-build tool and reused, so normal startup does not pay the build cost.
-    std::string engine_cache_dir{"models/trt_cache"};
+    std::string engine_cache_dir{"var/trt_cache"};
     /// Refuse to run if the requested backend is unavailable, instead of falling back.
     bool strict_backend{false};
     int intra_op_threads{2};
@@ -110,53 +110,12 @@ struct DetectorConfig {
 };
 
 struct OcrConfig {
-    /// Production OCR implementation. Nomeroff is the default; fast_plate_ocr remains only for
-    /// controlled A/B measurements while the migration is validated.
-    std::string backend{"nomeroff"};
-    /// Persistent Python worker used by the Nomeroff adapter. It lives in an isolated venv and
-    /// is started once, not once per crop or camera.
-    std::string python_executable{".venv-nomeroff/bin/python"};
-    std::string worker_script{"tools/nomeroff_worker.py"};
-    std::string model_cache_dir{"models/nomeroff"};
-    /// auto | cpu | mps | cuda. Auto probes CUDA first, then MPS, then CPU. The worker performs
-    /// a real warm-up and falls back from MPS to CPU if an operation is unsupported.
-    std::string device{"auto"};
-    /// Explicit regional OCR model. Automatic country classification is intentionally avoided:
-    /// upstream documents that its classifier is primarily tuned for Ukrainian plates.
-    std::string region_mode{"kz"};
-    /// 1 for ordinary horizontal plates, 2 for Nomeroff's supported split/two-line path.
-    int lines_count{1};
-    bool fp16{true};
-    std::int64_t startup_timeout_ms{180000};
-    std::int64_t request_timeout_ms{10000};
-
-    // Research-only general OCR workers. They deliberately live in isolated environments so
-    // PaddleOCR and EasyOCR cannot replace the JetPack-matched PyTorch/ONNX Runtime packages
-    // used by the production path. The C++ runtime owns one persistent worker per backend and
-    // shares it across camera pipelines.
-    std::string research_worker_script{"tools/research_ocr_worker.py"};
-    std::string research_model_cache_dir{"models/research"};
-    std::string paddle_python_executable{".venv-paddleocr/bin/python"};
-    std::string paddle_model{"eslav_PP-OCRv5_mobile_rec"};
-    std::string paddle_engine{"onnxruntime"};
-    std::string easyocr_python_executable{".venv-easyocr/bin/python"};
-    std::string easyocr_languages{"en"};
-    /// `easyocr_onnx`: the same EasyOCR recognizer exported by tools/export_easyocr_onnx.py and
-    /// run in-process by the inference backend (TensorRT on the Jetson), without PyTorch.
-    std::string easyocr_onnx_dir{"models/easyocr-onnx"};
-    /// `nomeroff_onnx`: Nomeroff's kz text reader exported by tools/export_nomeroff_onnx.py and
-    /// run in-process by the inference backend (TensorRT on the Jetson), without PyTorch.
-    std::string nomeroff_onnx_model{"models/nomeroff-onnx/kz.onnx"};
-
-    // Legacy Fast Plate OCR settings. Kept behind `backend: fast_plate_ocr` until the labelled
-    // KZ/RU comparison is complete; they are not touched by the Nomeroff hot path.
-    std::string model{"models/plate_ocr.onnx"};
-    /// Fast Plate OCR YAML shipped with the model. Every preprocessing and decoding value is
-    /// read from it, so a different Fast Plate OCR model needs no code change.
-    std::string plate_config{"models/plate_ocr_config.yaml"};
+    /// Nomeroff Net 4.0.1's Kazakhstan text reader as ONNX, made by tools/export_nomeroff_onnx.py.
+    /// The Jetson image builds it at /opt/kz-anpr/models/nomeroff-onnx/kz.onnx.
+    std::string model{"models/nomeroff-onnx/kz.onnx"};
     /// Reject an OCR reading whose mean character confidence is below this.
     double min_confidence{0.55};
-    /// Reject individual characters below this before they reach validation.
+    /// Reject a reading whose weakest character is below this.
     double min_char_confidence{0.30};
     /// Upper bound on OCR calls in one recognition session. Caps the worst-case GPU cost.
     int max_attempts{12};
@@ -257,9 +216,6 @@ struct PlateFormat {
 };
 
 struct ValidationConfig {
-    /// auto selects the built-in KZ/RU profile from ocr.region_mode. custom preserves the
-    /// configured formats for other CIS deployments.
-    std::string profile{"auto"};
     /// Letters permitted in `L` slots.
     std::string letters{"ABCDEFGHIJKLMNOPQRSTUVWXYZ"};
     std::vector<PlateFormat> formats;
@@ -328,14 +284,9 @@ struct ConfigLoadResult {
 
 /// Returns the built-in Kazakhstan validation rules, used when the file omits `validation`.
 ValidationConfig defaultKazakhstanValidation();
-ValidationConfig defaultRussianValidation();
 
 ConfigLoadResult loadConfigFile(const std::string& path);
 ConfigLoadResult loadConfigText(const std::string& text);
 bool validateConfig(const AnprConfig& config, std::string& error);
-
-/// Applies the documented environment overrides. Kept separate from file parsing so unit tests
-/// remain deterministic and callers can report invalid environment values before model loading.
-bool applyEnvironmentOverrides(AnprConfig& config, std::string& error);
 
 }  // namespace anpr

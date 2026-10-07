@@ -346,8 +346,7 @@ ParseResult parse(const std::string& text) {
     int number = 0;
 
     // A flow sequence may span several physical lines. Those are joined back into one logical
-    // line before indentation is interpreted, which is how the Fast Plate OCR config writes its
-    // region list.
+    // line before indentation is interpreted, so a long list can be wrapped.
     std::string pending;
     int pending_indent = 0;
     int pending_number = 0;

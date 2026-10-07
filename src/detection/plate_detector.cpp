@@ -186,7 +186,6 @@ std::unique_ptr<IPlateDetector> makePlateDetector(const DetectorConfig& detector
     request.model_path = detector.model;
     request.inference = inference;
     request.tag = "detector";
-    request.requires_uint8_input = false;
     request.input_size_hint = detector.input_size;
 
     std::unique_ptr<IInferenceSession> session = createInferenceSession(request, error);
@@ -203,9 +202,9 @@ std::unique_ptr<IPlateDetector> makePlateDetector(const DetectorConfig& detector
 
 class SharedPlateDetectorCore {
 public:
-    SharedPlateDetectorCore(std::unique_ptr<IPlateDetector> detector,
-                            std::shared_ptr<PipelineMetrics> aggregate_metrics)
-        : detector(std::move(detector)), aggregate_metrics(std::move(aggregate_metrics)) {}
+    SharedPlateDetectorCore(std::unique_ptr<IPlateDetector> shared_detector,
+                            std::shared_ptr<PipelineMetrics> shared_metrics)
+        : detector(std::move(shared_detector)), aggregate_metrics(std::move(shared_metrics)) {}
 
     std::mutex mutex;
     std::unique_ptr<IPlateDetector> detector;

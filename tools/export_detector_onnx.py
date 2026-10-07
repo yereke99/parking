@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Offline helper for exporting the prototype detector to ONNX."""
+"""Export the YOLOv8n plate detector (license_plate_detector.pt) to ONNX for the C++ runtime.
+
+Needs `ultralytics` on a PC; JetPack 4's Python is too old for it. See models/README.md.
+"""
 
 from __future__ import annotations
 

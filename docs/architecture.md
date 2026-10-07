@@ -14,8 +14,8 @@ plate confirmed     OCR stops immediately
 vehicle leaves      back to idle
 ```
 
-Measured on the bundled clip, this runs the detector on 16 percent of frames and OCR three times
-per vehicle, against the Python prototype's every frame and 59 OCR calls.
+An idle barrier therefore costs almost nothing, and the GPU is busy only while a vehicle is
+there.
 
 ## Data flow
 
@@ -23,23 +23,22 @@ per vehicle, against the Python prototype's every frame and 59 OCR calls.
 CameraSource (file | USB | RTSP | GStreamer)
   -> FramePump              capture thread, one-slot latest-frame handover
   -> RoiMotionDetector      every frame, downscaled ROI difference
-  -> PlateDetector          state-dependent cadence, ONNX Runtime or OpenCV DNN
+  -> PlateDetector          YOLOv8n at a state-dependent cadence (TensorRT FP16 on the Jetson)
   -> PlateTracker           IoU plus centroid association between detector calls
   -> StopDetector           rolling displacement, size and speed window
   -> VehicleStateMachine    decides what the next frame deserves
   -> QualityAssessor        size, blur, exposure and clipping gates
-  -> NomeroffRecognizer     dedicated configured regional CTC model
-  -> PlateValidator         configurable slot patterns and confusion repair
+  -> NomeroffOnnx           Nomeroff Net's Kazakhstan CTC model (TensorRT FP32 on the Jetson)
+  -> PlateValidator         Kazakhstan slot patterns, region codes, confusion repair
   -> PlateConsensus         streaming multi-frame vote, stops early when satisfied
-  -> PlateSink              PlateRecognitionEvent
+  -> PlateSink              PlateRecognitionEvent: JSON on stdout and in the events file
 ```
 
 ## Threading and multiple streams
 
 Each source owns one capture thread and one latest-frame slot. A single coordinator visits the
-streams round-robin and runs their independent state machines. Detector weights and the persistent
-Nomeroff worker are shared; tracking, stop detection, consensus and event identity remain per
-camera.
+streams round-robin and runs their independent state machines. The detector and OCR sessions are
+shared; tracking, stop detection, consensus and event identity remain per camera.
 
 **Capture thread.** Owns the camera handle, reads frames, publishes into a one-slot buffer that
 overwrites. It also owns reconnection with exponential backoff. It never waits for inference,
@@ -61,22 +60,24 @@ worth nothing. There is no queue that can grow.
 
 | Backend | Used for |
 | --- | --- |
-| `tensorrt` | Jetson. Native TensorRT FP16 with a serialized engine cache; the Nano profile forbids detector CPU fallback |
+| `tensorrt` | Jetson. Native TensorRT 8.2 with a serialized engine cache in `inference.engine_cache_dir`: the detector in FP16, the OCR in FP32 |
 | `onnx_cuda` | Any CUDA GPU without TensorRT |
 | `onnx_cpu` | Portable fallback, and the development default on x86 and macOS |
-| `opencv_dnn` | Last resort when ONNX Runtime is not linked. Detector only |
+| `opencv_dnn` | Development last resort when ONNX Runtime is not linked; depends on the OpenCV build's ONNX importer |
 
-`auto` walks that list and takes the first that loads. `strict_backend: true` turns a fallback
-into a startup failure instead, which is what a production Jetson should run with.
+`auto` walks that list and takes the first that loads; `tensorrt` falls back to ONNX Runtime.
+`strict_backend: true` turns a detector fallback into a startup failure, which is what the Jetson
+profile runs with. The OCR may still fall back to the ONNX Runtime CPU package if TensorRT refuses
+its model, so a refused engine never stops the barrier; `model_loaded` logs which backend each
+model got.
 
-Portable builds may reach TensorRT through ONNX Runtime's execution provider. The Jetson Nano
-Docker image instead links the compact native TensorRT 8.2 session so it does not have to compile
-ONNX Runtime on a 4 GB board. Both paths implement the same `IInferenceSession` contract.
+The Jetson image links the compact native TensorRT session instead of compiling ONNX Runtime on a
+4 GB board; Microsoft's prebuilt aarch64 CPU package provides the fallback. Both implement the same
+`IInferenceSession` contract.
 
-Detector buffers are allocated once. The session owns its input and output host buffers, the detector
-holds `cv::Mat` headers directly over the input tensor so `cv::split` writes the planar NCHW
-layout in place. Nomeroff owns its PyTorch tensors in the persistent worker and receives only the
-quality-selected crop; a full frame never crosses the process boundary.
+Buffers are allocated once. Each session owns its input and output host buffers, and the detector
+and the OCR hold `cv::Mat` headers directly over their input tensors, so `cv::split` writes the
+planar NCHW layout in place. The OCR receives only the quality-selected plate crop.
 
 ## State machine
 
@@ -161,29 +162,34 @@ ambiguous rather than repaired. Formats compete: the layout needing the fewest r
 ## Output
 
 One `PlateRecognitionEvent` per finished session, accepted or not, delivered through `PlateSink`.
-That is the whole public surface. `JsonStdoutSink` is the default; a database writer, an HTTP
-client, a GPIO relay or an access-control call implements the same interface. Check
-`event.status` before opening a barrier.
+That is the whole public surface. `JsonStdoutSink` writes every event to stdout, and
+`JsonLinesFileSink` (`--events-file`) appends it to a file; a database writer, an HTTP client, a
+GPIO relay or an access-control call implements the same interface. Check `event.status` before
+opening a barrier. Logs go to stderr, so stdout carries nothing but events.
 
 ```json
 {
   "event": "plate_recognition",
   "status": "VALID_HIGH_CONFIDENCE",
-  "normalized_plate": "123ABC02",
-  "raw_plate": "123A8C02",
-  "confidence": 0.9024,
-  "timestamp_ms": 1292,
+  "normalized_plate": "152JTA02",
+  "raw_plate": "152JTA02",
+  "confidence": 0.8309,
+  "timestamp_ms": 8533,
+  "time": "2026-10-08T07:12:03.120Z",
   "camera_id": "gate-01",
-  "plate_box": {"x": 842, "y": 378, "width": 545, "height": 347},
+  "plate_box": {"x": 414, "y": 340, "width": 143, "height": 49},
   "region_code": "02",
   "region_name": "Almaty",
   "format": "current_individual",
-  "recognition_latency_ms": 125,
-  "observation_count": 3,
+  "recognition_latency_ms": 4267,
+  "observation_count": 30,
   "agreeing_observations": 3,
   "best_crop_path": null
 }
 ```
+
+`time` is the wall clock in UTC. `timestamp_ms` is pipeline time: the position in the clip for a
+file, a monotonic clock for a camera.
 
 ## Failure handling
 

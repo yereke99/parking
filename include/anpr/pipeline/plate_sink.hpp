@@ -1,6 +1,8 @@
 #pragma once
 
+#include <fstream>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "anpr/pipeline/recognition_event.hpp"
@@ -28,6 +30,22 @@ public:
 class JsonStdoutSink final : public PlateSink {
 public:
     void onRecognition(const PlateRecognitionEvent& event) override;
+};
+
+/// Appends one JSON object per event to a file and flushes it, so another process can follow
+/// the file (`tail -F`) and nothing written is lost when the process stops. The file is opened
+/// in append mode, so `logrotate` with `copytruncate` can rotate it under a running process.
+/// A failed write (a full disk) is logged and the next event is tried again; it never stops
+/// the pipeline.
+class JsonLinesFileSink final : public PlateSink {
+public:
+    explicit JsonLinesFileSink(const std::string& path);
+    [[nodiscard]] bool ok() const { return static_cast<bool>(out_); }
+    void onRecognition(const PlateRecognitionEvent& event) override;
+
+private:
+    std::string path_;
+    std::ofstream out_;
 };
 
 /// Keeps events in memory. Used by tests and the benchmark tool.
