@@ -40,6 +40,8 @@ bool FramePump::start() {
         stats_.connected = true;
     }
 
+    // Only file sources cannot reconnect; nothing else may make the capture thread wait.
+    wait_for_slot_ = config_.process_every_file_frame && !source_->reconnectable();
     running_.store(true);
     thread_ = std::thread(&FramePump::captureLoop, this);
     return true;
@@ -52,7 +54,12 @@ void FramePump::stop() {
         }
         return;
     }
+    {
+        // Taking the lock orders the stop flag before a capture thread that is about to wait.
+        const std::lock_guard<std::mutex> guard(mutex_);
+    }
     frame_available_.notify_all();
+    slot_free_.notify_all();
     if (thread_.joinable()) {
         thread_.join();
     }
@@ -61,7 +68,13 @@ void FramePump::stop() {
 
 void FramePump::publish(Frame& frame) {
     {
-        const std::lock_guard<std::mutex> guard(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (wait_for_slot_) {
+            slot_free_.wait(lock, [this] { return !slot_filled_ || !running_.load(); });
+            if (!running_.load()) {
+                return;
+            }
+        }
         if (slot_filled_) {
             // The processing thread is still busy. The older frame is worth less than the new
             // one at a barrier, so it goes.
@@ -155,6 +168,8 @@ bool FramePump::waitForFrame(Frame& frame, std::int64_t timeout_ms) {
     }
     std::swap(frame, slot_);
     slot_filled_ = false;
+    lock.unlock();
+    slot_free_.notify_one();
     return !frame.image.empty();
 }
 

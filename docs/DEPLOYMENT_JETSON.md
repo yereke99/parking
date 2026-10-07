@@ -13,7 +13,7 @@ This path targets the original NVIDIA Jetson Nano Developer Kit, not Orin:
 | OpenCV / NumPy / scikit-image | OpenCV 4.5.0 / NumPy 1.19.5 from L4T; scikit-image 0.17.2 built against that NumPy |
 | Project detector | Native TensorRT 8.2, CUDA, FP16, serialized engine cache |
 | Native ONNX Runtime | Microsoft aarch64 CPU package 1.11.1, SHA-256 checked |
-| EasyOCR | 1.6.2, recognition-only, English G2 model, SHA-256 checked |
+| EasyOCR | 1.6.2, recognition-only, English G2 model, SHA-256 checked; also exported to ONNX for TensorRT |
 
 The container intentionally does not upgrade CUDA, TensorRT, PyTorch, torchvision, OpenCV,
 NumPy or SciPy. Those packages are ABI-coupled to the old JetPack image. EasyOCR's required
@@ -140,6 +140,7 @@ row.
 | --- | --- | --- |
 | `fast_plate_ocr` | TensorRT detector, CPU OCR | Official aarch64 ONNX Runtime 1.11.1 C/C++ package handles only this legacy uint8 recognizer |
 | `easyocr` | TensorRT detector, CUDA OCR | EasyOCR 1.6.2 reuses NVIDIA PyTorch 1.10; the second text detector is disabled |
+| `easyocr_onnx` | TensorRT detector, TensorRT OCR | The same EasyOCR recognizer exported to ONNX at image build, run in-process |
 | `nomeroff` | Explicitly unavailable | Control Python is 3.9, but Nomeroff 4.0.1 also needs PyTorch >=1.12; Nano's CUDA stack is fixed at NVIDIA PyTorch 1.10 under Python 3.6 |
 | `paddleocr` | Explicitly unavailable | PaddleOCR 3.7 requires a newer Python stack and PaddlePaddle does not publish a compatible JetPack 4 aarch64 wheel |
 
@@ -183,7 +184,22 @@ CUDA through NVIDIA PyTorch. `make run` selects EasyOCR by default, so both the 
 of the normal project path use the Nano GPU. `PROJECT_OCR=fast_plate_ocr make run` selects the
 explicit mixed GPU-detector/CPU-OCR fallback.
 
-A cold CUDA EasyOCR start shares the Nano's 4 GB with the TensorRT detector and can take minutes.
+`make run` uses `easyocr_onnx`. The image build exports EasyOCR's recognizer with its own
+PyTorch 1.10 (`tools/export_easyocr_onnx.py`) once per input width EasyOCR can use, 64 to 384 px,
+into `/opt/kz-anpr/models/easyocr-onnx`. The C++ backend picks the width EasyOCR would pad the
+crop to and reproduces its preprocessing, 0-9A-Z allowlist, contrast retry and score; on the
+bundled clips its readings match the PyTorch worker crop for crop. It shares the detector's CUDA
+context, so the roughly 2 GB PyTorch worker and its 75 s start disappear. The first run logs
+`event=tensorrt_engine_build` for each width and caches the engines next to the detector's. If
+TensorRT rejects an OCR engine, that width runs on ONNX Runtime CPU and `model_loaded` says so.
+
+Both `kz_anpr` models warm up before the camera opens, so TensorRT's lazy first-inference setup
+no longer stalls the first frames. With `camera.process_every_file_frame: true` (the Jetson
+profile) a video file is processed frame by frame; cameras and RTSP still keep only the newest
+frame.
+
+The PyTorch worker (`PROJECT_OCR=easyocr make run`) remains available. A cold CUDA EasyOCR start
+shares the Nano's 4 GB with the TensorRT detector and can take minutes.
 The worker prints one `event=research_ocr_stage` line per stage (`import_torch`, `load_model`,
 `warmup`, `ready`) with `mem_available_mb`, so a slow start shows where it waits. On the Jetson it
 runs without cuDNN (`KZ_ANPR_EASYOCR_CUDNN=0`), whose kernels would cost several hundred MB more.

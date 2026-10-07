@@ -34,6 +34,10 @@ struct CameraConfig {
     /// the live path behave nothing like it does on a camera. The benchmark tool bypasses the
     /// capture thread entirely and is unaffected.
     bool realtime_file{true};
+    /// Video files only: the capture thread waits for the pipeline to take each frame instead
+    /// of replacing it, so every frame of the clip is processed even when inference is slower
+    /// than the clip. Live sources always keep only the newest frame.
+    bool process_every_file_frame{false};
 };
 
 enum class InferenceBackend { kAuto, kTensorRT, kOnnxCuda, kOnnxCpu, kOpenCvDnn };
@@ -137,6 +141,9 @@ struct OcrConfig {
     std::string paddle_engine{"onnxruntime"};
     std::string easyocr_python_executable{".venv-easyocr/bin/python"};
     std::string easyocr_languages{"en"};
+    /// `easyocr_onnx`: the same EasyOCR recognizer exported by tools/export_easyocr_onnx.py and
+    /// run in-process by the inference backend (TensorRT on the Jetson), without PyTorch.
+    std::string easyocr_onnx_dir{"models/easyocr-onnx"};
 
     // Legacy Fast Plate OCR settings. Kept behind `backend: fast_plate_ocr` until the labelled
     // KZ/RU comparison is complete; they are not touched by the Nomeroff hot path.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible 1/2/4-stream ANPR benchmark and telemetry collector."""
+"""Reproducible 1/2/4-stream ANPR benchmark, sequential OCR comparison and telemetry collector."""
 
 import argparse
 import copy
@@ -22,6 +22,17 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 ROOT = Path(__file__).resolve().parents[1]
 OCR_BACKENDS = ("fast_plate_ocr", "nomeroff", "paddleocr", "easyocr")
 RESEARCH_VIDEOS = ("video/car.mp4", "video/parking.mp4", "video/parking2.mp4")
+# --ocr-benchmark rows, run strictly one after another. EasyOCR has two: the in-process TensorRT
+# export and the PyTorch worker it replaces.
+OCR_BENCHMARK_ENGINES = (
+    ("easyocr_onnx", "EasyOCR (ONNX/TensorRT)"),
+    ("easyocr", "EasyOCR (PyTorch worker)"),
+    ("nomeroff", "Nomeroff-Net"),
+    ("paddleocr", "PaddleOCR"),
+    ("fast_plate_ocr", "Fast-Plate-OCR"),
+)
+CYRILLIC_LOOKALIKES = str.maketrans("АВСЕНКМОРТХУІЈавсенкмортхуіј",
+                                    "ABCEHKMOPTXYIJABCEHKMOPTXYIJ")
 
 
 def command_output(command: List[str]) -> Optional[str]:
@@ -583,6 +594,408 @@ def write_research_markdown(path: Path, report: Dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def normalize_plate(text: str) -> str:
+    """The workers' normalization: plate-font Cyrillic lookalikes to Latin, alphanumerics only."""
+    return re.sub(r"[^0-9A-Z]", "", str(text).upper().translate(CYRILLIC_LOOKALIKES))
+
+
+def mem_available_mb() -> Optional[float]:
+    try:
+        with open("/proc/meminfo") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def run_measured(command: List[str], label: str) -> Dict[str, Any]:
+    """Runs one benchmark process to completion while sampling its process tree."""
+    available_before = mem_available_mb()
+    started = time.monotonic()
+    process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True)
+    sampler = ResourceSampler(process.pid)
+    sampler.start()
+    stdout, stderr = process.communicate()
+    resources = sampler.stop()
+    wall_seconds = time.monotonic() - started
+    if process.returncode != 0:
+        lines = (stderr or stdout).strip().splitlines()
+        # Lead with the line that names the failure; worker progress lines come first otherwise.
+        errors = [line for line in lines if re.search(
+            r"UNAVAILABLE|NOT_FOUND|INVALID|Error|error|failed|Traceback", line)]
+        tail = "\n".join(errors[-2:] + lines[-6:])
+        if process.returncode < 0:
+            signal_number = -process.returncode
+            cause = "killed by signal {0}{1}".format(
+                signal_number, " (likely out of memory)" if signal_number == 9 else "")
+        else:
+            cause = "exit {0}".format(process.returncode)
+        raise RuntimeError("{0} failed: {1}\n{2}".format(label, cause, tail))
+    report = parse_json_output(stdout)
+    report["resources"] = resources
+    report["wall_seconds"] = wall_seconds
+    report["mem_available_before_mb"] = available_before
+    report["command"] = command
+    report["log_findings"] = log_findings(stderr)
+    return report
+
+
+def log_findings(stderr: str) -> List[str]:
+    """Fallbacks, unavailable providers and worker failures worth reporting from a run's log."""
+    findings = []
+    for line in stderr.splitlines():
+        if ("backend_unavailable" in line or "level=error" in line or "level=warn" in line or
+                ("fallback=" in line and "fallback=none" not in line) or "cpu_fallback" in line or
+                "OCR_BACKEND_UNAVAILABLE" in line or "out of memory" in line.lower()):
+            findings.append(line.strip()[:300])
+    return findings[:20]
+
+
+def crop_labels(index_path: Path, truth: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, str]]:
+    """Ground truth per crop file. A clip with one label and no time window shows one plate; a
+    clip with time windows labels only the crops inside a window; other clips stay unlabelled."""
+    labels: Dict[str, Dict[str, str]] = {}
+    with index_path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            video = row["video"]
+            entries = truth.get(video) or truth.get(Path(video).name) or []
+            stream_ms = int(float(row.get("stream_ms") or 0))
+            windowed = [entry for entry in entries
+                        if entry["start_ms"] is not None or entry["stop_ms"] is not None]
+            match = None
+            if windowed:
+                for entry in windowed:
+                    if ((entry["start_ms"] is None or stream_ms >= entry["start_ms"]) and
+                            (entry["stop_ms"] is None or stream_ms <= entry["stop_ms"])):
+                        match = entry
+                        break
+            elif len(entries) == 1:
+                match = entries[0]
+            if match is not None:
+                labels[row["file"]] = {"expected": match["expected"],
+                                       "region": match["plate_region"]}
+    return labels
+
+
+def crop_accuracy(results: List[Dict[str, Any]], labels: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+    def score(items: List[Tuple[Dict[str, Any], Dict[str, str]]]) -> Dict[str, Any]:
+        chars = sum(len(label["expected"]) for _, label in items)
+        errors = sum(levenshtein(label["expected"], normalize_plate(result["text"]))
+                     for result, label in items)
+        exact = sum(normalize_plate(result["text"]) == label["expected"] for result, label in items)
+        accepted_exact = sum(result["rejection"] == "none" and
+                             normalize_plate(result["text"]) == label["expected"]
+                             for result, label in items)
+        return {
+            "crops": len(items),
+            "exact": exact,
+            "exact_accuracy": exact / len(items),
+            "accepted_exact": accepted_exact,
+            "accepted_exact_accuracy": accepted_exact / len(items),
+            "cer": errors / max(1, chars),
+            "character_accuracy": max(0.0, 1.0 - errors / max(1, chars)),
+        }
+
+    labelled = [(result, labels[result["file"]]) for result in results if result["file"] in labels]
+    if not labelled:
+        return {"available": False, "reason": "no crop comes from a labelled clip"}
+    by_region = {}
+    for region in sorted({label["region"] for _, label in labelled}):
+        by_region[region] = score([item for item in labelled if item[1]["region"] == region])
+    return {"available": True, **score(labelled), "by_region": by_region}
+
+
+def pipeline_accuracy(report: Dict[str, Any], video: str,
+                      truth: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    entries = truth.get(video) or truth.get(Path(video).name) or []
+    if len(entries) != 1:
+        return {"available": False,
+                "reason": "clip is unlabelled" if not entries else "clip has several labels"}
+    expected = entries[0]["expected"]
+    events = report.get("events", [])
+    accepted = [event for event in events
+                if event.get("status") in ("VALID_HIGH_CONFIDENCE", "VALID_LOW_CONFIDENCE")]
+    candidates = [event for event in events if event.get("normalized_plate")]
+    predicted = normalize_plate(accepted[0].get("normalized_plate", "")) if accepted else ""
+    candidate = normalize_plate(candidates[0].get("normalized_plate", "")) if candidates else ""
+    return {"available": True, "expected": expected, "region": entries[0]["plate_region"],
+            "accepted": predicted, "exact": predicted == expected,
+            "candidate": candidate, "candidate_exact": candidate == expected}
+
+
+def merge_resources(runs: List[Dict[str, Any]], key: str) -> Dict[str, Optional[float]]:
+    """Sample-weighted average and overall peak of one resource series across runs."""
+    total, weight, peak = 0.0, 0, None
+    for run in runs:
+        resources = run.get("resources") or {}
+        series = resources.get(key)
+        if not series:
+            continue
+        samples = max(1, int(resources.get("samples", 1)))
+        total += series["avg"] * samples
+        weight += samples
+        peak = series["peak"] if peak is None else max(peak, series["peak"])
+    return {"avg": total / weight if weight else None, "peak": peak}
+
+
+def ocr_benchmark(args: argparse.Namespace, run_root: Path,
+                  truth: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Every OCR engine on the same crops and the same clips, one engine at a time."""
+    total_started = time.monotonic()
+    videos = args.research_video or list(RESEARCH_VIDEOS)
+    common = ["--config", str(args.config), "--warmup-frames", str(max(1, args.warmup_frames)),
+              "--json"]
+    if args.backend:
+        common.extend(["--backend", args.backend])
+    frame_limit = ["--max-frames", str(args.max_frames)] if args.max_frames else []
+
+    crops_root = run_root / "crops"
+    extraction = []
+    for video in videos:
+        print("[ocr-benchmark] extracting plate crops from {0}".format(video), flush=True)
+        extraction.append(run_measured(
+            [str(args.binary), "--video", video, "--extract-crops", str(crops_root)] + common +
+            frame_limit, "crop extraction for " + video))
+    index_path = crops_root / "index.csv"
+    if not index_path.is_file():
+        raise RuntimeError("the detector produced no plate crops; nothing to compare")
+    labels = crop_labels(index_path, truth)
+
+    selected = args.ocr_engine or [engine for engine, _ in OCR_BENCHMARK_ENGINES]
+    names = dict(OCR_BENCHMARK_ENGINES)
+    rows = []
+    for position, engine in enumerate(selected):
+        if position:
+            # Let the previous engine's memory return to the system before the next one starts.
+            time.sleep(args.cooldown)
+        row: Dict[str, Any] = {"engine": engine, "label": names.get(engine, engine)}
+        engine_started = time.monotonic()
+        print("[ocr-benchmark] {0}: OCR on {1} identical crops".format(
+            row["label"], sum(item["crops"] for item in extraction)), flush=True)
+        try:
+            crops = run_measured([str(args.binary), "--ocr-backend", engine,
+                                  "--ocr-crops", str(index_path)] + common,
+                                 row["label"] + " crop OCR")
+        except RuntimeError as exc:
+            row.update(status="unavailable", reason=str(exc),
+                       wall_seconds=time.monotonic() - engine_started)
+            rows.append(row)
+            continue
+        crops["accuracy"] = crop_accuracy(crops.pop("results"), labels)
+        row["crops"] = crops
+        pipelines = []
+        for video in videos:
+            print("[ocr-benchmark] {0}: full pipeline on {1}, every frame".format(
+                row["label"], video), flush=True)
+            try:
+                run = run_measured([str(args.binary), "--video", video, "--ocr-backend", engine] +
+                                   common + frame_limit, row["label"] + " pipeline on " + video)
+                run["accuracy"] = pipeline_accuracy(run, video, truth)
+                run["status"] = "ok"
+            except RuntimeError as exc:
+                run = {"status": "failed", "video": video, "reason": str(exc)}
+            pipelines.append(run)
+        row["pipelines"] = pipelines
+        row["status"] = "ok" if all(run["status"] == "ok" for run in pipelines) else "partial"
+        row["wall_seconds"] = time.monotonic() - engine_started
+        rows.append(row)
+
+    return {
+        "mode": "ocr_benchmark",
+        "metadata": platform_metadata(),
+        "videos": videos,
+        "extraction": extraction,
+        "labelled_crops": len(labels),
+        "engines": rows,
+        "total_seconds": time.monotonic() - total_started,
+    }
+
+
+def ocr_engine_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Flat per-engine figures for the report and the ranking."""
+    crops = row["crops"]
+    accuracy = crops["accuracy"]
+    pipelines = [run for run in row["pipelines"] if run["status"] == "ok"]
+    frames = sum(run["frames"] for run in pipelines)
+    pipeline_seconds = sum(run["seconds"] for run in pipelines)
+    runs = [crops] + pipelines
+    kz = (accuracy.get("by_region") or {}).get("kz") if accuracy.get("available") else None
+    return {
+        "device": crops["backend"],
+        "model": crops["model"],
+        "crops": crops["crops"],
+        "accepted": crops["accepted"],
+        "empty": crops["empty"],
+        "rejected": crops["crops"] - crops["accepted"],
+        "exact": accuracy.get("exact_accuracy") if accuracy.get("available") else None,
+        "cer": accuracy.get("cer") if accuracy.get("available") else None,
+        "kz_exact": kz["exact_accuracy"] if kz else None,
+        "kz_cer": kz["cer"] if kz else None,
+        "ocr_fps": crops["ocr_fps"],
+        "ocr_avg_ms": crops["latency"]["ocr"]["avg_ms"],
+        "ocr_p50_ms": crops["latency"]["ocr"]["p50_ms"],
+        "ocr_p95_ms": crops["latency"]["ocr"]["p95_ms"],
+        "startup_s": (crops["load_ms"] + crops["warmup_ms"]) / 1000.0,
+        "frames": frames,
+        "pipeline_fps": frames / pipeline_seconds if pipeline_seconds > 0 else None,
+        "detections": sum(run.get("metrics", {}).get("detections", 0) for run in pipelines),
+        "pipeline_ocr_calls": sum(run.get("ocr_calls", 0) for run in pipelines),
+        "plates_confirmed": sum(run.get("plates_confirmed", 0) for run in pipelines),
+        "pipeline_exact": [run["accuracy"] for run in pipelines
+                           if run.get("accuracy", {}).get("available")],
+        "rss_mb": merge_resources(runs, "rss_mb"),
+        "system_ram_mb": merge_resources(runs, "system_ram_used_mb"),
+        "gpu_memory_mb": merge_resources(runs, "gpu_memory_mb"),
+        "wall_seconds": row["wall_seconds"],
+        "findings": [line for run in runs for line in run.get("log_findings", [])],
+        "failed_pipelines": [run for run in row["pipelines"] if run["status"] != "ok"],
+    }
+
+
+def write_ocr_benchmark_markdown(path: Path, report: Dict[str, Any]) -> None:
+    def fmt(value: Any, digits: int = 1, suffix: str = "") -> str:
+        return "n/a" if value is None else "{0:.{1}f}{2}".format(float(value), digits, suffix)
+
+    def pct(value: Any) -> str:
+        return "n/a" if value is None else "{0:.1f}%".format(100.0 * float(value))
+
+    summaries = {row["engine"]: ocr_engine_summary(row)
+                 for row in report["engines"] if row["status"] in ("ok", "partial")}
+    crops = sum(item["crops"] for item in report["extraction"])
+    lines = [
+        "# Sequential OCR Benchmark",
+        "",
+        "Timestamp: `{0}`; git `{1}`".format(report["metadata"]["timestamp"],
+                                             (report["metadata"].get("git_commit") or "?")[:12]),
+        "",
+        "Engines ran one at a time, each in its own process. All used the same TensorRT detector "
+        "settings, clips and configuration. Accuracy, OCR FPS and latency come from the same "
+        "{0} plate crops (detector on every frame, then the pipeline's ROI, size and quality "
+        "gates); {1} of them come from labelled clips. Pipeline FPS comes from full runs over "
+        "every frame of {2}. Model loading and warm-up are excluded from FPS and latency and "
+        "reported as startup.".format(crops, report["labelled_crops"],
+                                       ", ".join(Path(v).name for v in report["videos"])),
+        "",
+        "| OCR | Device | Accuracy (exact) | KZ exact | CER | OCR FPS | Pipeline FPS | Avg latency | Peak RAM | Startup | Total time |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in report["engines"]:
+        summary = summaries.get(row["engine"])
+        if summary is None:
+            reason = str(row.get("reason", "unavailable")).splitlines()
+            lines.append("| {0} | unavailable | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | {1} |".format(
+                row["label"], fmt(row.get("wall_seconds"), 0, " s")))
+            continue
+        lines.append("| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} |".format(
+            row["label"], summary["device"], pct(summary["exact"]), pct(summary["kz_exact"]),
+            fmt(summary["cer"], 3), fmt(summary["ocr_fps"]), fmt(summary["pipeline_fps"]),
+            fmt(summary["ocr_avg_ms"], 1, " ms"), fmt(summary["rss_mb"]["peak"], 0, " MB"),
+            fmt(summary["startup_s"], 1, " s"), fmt(summary["wall_seconds"], 0, " s")))
+
+    lines.extend([
+        "",
+        "## Details",
+        "",
+        "| OCR | Model | Frames | Crops | Recognized | Empty | P50 | P95 | Avg RAM | System RAM peak | Plates confirmed | Pipeline exact |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ])
+    for row in report["engines"]:
+        summary = summaries.get(row["engine"])
+        if summary is None:
+            continue
+        pipeline_exact = ", ".join(
+            "{0} {1}".format(item["expected"], "yes" if item["exact"] else
+                             "no (" + (item["accepted"] or item["candidate"] or "none") + ")")
+            for item in summary["pipeline_exact"]) or "n/a"
+        lines.append("| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} |".format(
+            row["label"], summary["model"], summary["frames"], summary["crops"],
+            summary["accepted"], summary["empty"], fmt(summary["ocr_p50_ms"], 1, " ms"),
+            fmt(summary["ocr_p95_ms"], 1, " ms"), fmt(summary["rss_mb"]["avg"], 0, " MB"),
+            fmt(summary["system_ram_mb"]["peak"], 0, " MB"), summary["plates_confirmed"],
+            pipeline_exact))
+
+    lines.extend(["", "## Ranking", ""])
+    ranked = list(summaries.items())
+    names = {row["engine"]: row["label"] for row in report["engines"]}
+
+    def best(key, reverse, label, unit_format):
+        candidates = [(engine, summary) for engine, summary in ranked if summary[key] is not None]
+        if not candidates:
+            return "{0}: not measurable on this run.".format(label)
+        candidates.sort(key=lambda item: item[1][key], reverse=reverse)
+        engine, summary = candidates[0]
+        return "{0}: **{1}** ({2}).".format(label, names[engine], unit_format(summary[key]))
+
+    lines.append("1. " + best("exact", True, "Best accuracy", pct))
+    lines.append("2. " + best("ocr_fps", True, "Best OCR FPS", lambda v: fmt(v) + " crops/s"))
+    lines.append("3. " + best("ocr_avg_ms", False, "Lowest latency", lambda v: fmt(v, 1, " ms")))
+    peak_ram = [(engine, summary) for engine, summary in ranked if summary["rss_mb"]["peak"] is not None]
+    if peak_ram:
+        engine, summary = min(peak_ram, key=lambda item: item[1]["rss_mb"]["peak"])
+        lines.append("4. Lowest RAM: **{0}** (peak {1}).".format(
+            names[engine], fmt(summary["rss_mb"]["peak"], 0, " MB")))
+    else:
+        lines.append("4. Lowest RAM: not measurable on this run.")
+    kz = [(engine, summary) for engine, summary in ranked if summary["kz_exact"] is not None]
+    if kz:
+        kz.sort(key=lambda item: (-item[1]["kz_exact"], item[1]["kz_cer"], item[1]["ocr_p95_ms"],
+                                  item[1]["rss_mb"]["peak"] or 0.0))
+        engine, summary = kz[0]
+        if summary["kz_exact"] > 0.0:
+            lines.append(
+                "5. Best overall for Kazakhstan plates on this device: **{0}** — ranked by KZ "
+                "exact accuracy ({1}), then KZ CER ({2}), then OCR p95 ({3}), then peak "
+                "RAM.".format(names[engine], pct(summary["kz_exact"]), fmt(summary["kz_cer"], 3),
+                              fmt(summary["ocr_p95_ms"], 1, " ms")))
+        else:
+            lines.append(
+                "5. Best overall for Kazakhstan plates: **none** — no engine read a labelled KZ "
+                "crop exactly. Closest by character error rate: {0} (KZ CER {1}).".format(
+                    names[engine], fmt(summary["kz_cer"], 3)))
+    else:
+        lines.append("5. Best overall for Kazakhstan plates: cannot be decided — no engine "
+                     "produced readings on labelled KZ crops.")
+
+    lines.extend(["", "Total wall-clock time for the whole benchmark: **{0}** ({1:.0f} s).".format(
+        str(dt.timedelta(seconds=int(report["total_seconds"]))), report["total_seconds"]), ""])
+
+    lines.extend(["## Unavailable engines, failures and fallbacks", ""])
+    noted = False
+    for row in report["engines"]:
+        if row["status"] == "unavailable":
+            lines.append("- {0}: {1}".format(row["label"], " ".join(
+                str(row.get("reason", "")).split())[:400]))
+            noted = True
+            continue
+        summary = summaries[row["engine"]]
+        for run in summary["failed_pipelines"]:
+            lines.append("- {0}: pipeline on {1} failed: {2}".format(
+                row["label"], run["video"], " ".join(str(run["reason"]).split())[:300]))
+            noted = True
+        for finding in summary["findings"][:5]:
+            lines.append("- {0}: `{1}`".format(row["label"], finding))
+            noted = True
+    if not noted:
+        lines.append("- None: every engine loaded and ran without a fallback or crash.")
+
+    lines.extend([
+        "",
+        "## Notes",
+        "",
+        "- Crop accuracy assumes each single-label clip shows only its labelled plate "
+        "(`data/manifests/video_research.csv`); unlabelled clips count for speed only. Two "
+        "labelled clips are a smoke test, not a production validation set.",
+        "- `Recognized` counts crops whose reading passed the OCR confidence thresholds.",
+        "- RAM is the peak resident memory of the benchmark process and its OCR worker. On the "
+        "Jetson, CPU and GPU share memory: `System RAM peak` (tegrastats) includes GPU "
+        "allocations; there is no separate GPU memory counter.",
+    ])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "build" / "kz_anpr_benchmark")
@@ -595,7 +1008,16 @@ def parse_args() -> argparse.Namespace:
         "--research", action="store_true",
         help="run all four OCR backends on all three bundled videos with 1 and 4 streams",
     )
-    parser.add_argument("--ocr-backend", choices=OCR_BACKENDS, default="")
+    parser.add_argument("--ocr-backend", choices=OCR_BACKENDS + ("easyocr_onnx",), default="")
+    parser.add_argument(
+        "--ocr-benchmark", action="store_true",
+        help="sequential OCR comparison: every engine on the same crops and clips, one at a time",
+    )
+    parser.add_argument("--ocr-engine", action="append",
+                        choices=[engine for engine, _ in OCR_BENCHMARK_ENGINES],
+                        help="limit --ocr-benchmark to these engines; repeat for several")
+    parser.add_argument("--cooldown", type=float, default=5.0,
+                        help="seconds to wait between OCR engines in --ocr-benchmark")
     parser.add_argument("--research-video", action="append", default=[],
                         help="override the research video suite; repeat for multiple clips")
     parser.add_argument("--research-streams", action="append", type=int, choices=(1, 4),
@@ -611,7 +1033,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.config is None:
-        args.config = ROOT / "config" / ("research.yaml" if args.research else "default.yaml")
+        args.config = ROOT / "config" / (
+            "research.yaml" if args.research or args.ocr_benchmark else "default.yaml")
     if args.research and args.matrix:
         print("--research already runs 1 and 4 streams; do not combine it with --matrix",
               file=sys.stderr)
@@ -629,7 +1052,23 @@ def main() -> int:
     manifest = args.manifest
     if args.research and manifest is None:
         manifest = ROOT / "data" / "manifests" / "video_research.csv"
+    if args.ocr_benchmark and manifest is None:
+        manifest = ROOT / "data" / "manifests" / "video_research.csv"
     truth = load_ground_truth(manifest)
+    if args.ocr_benchmark:
+        try:
+            report = ocr_benchmark(args, run_root, truth)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        json_path = args.output_dir / f"ocr_benchmark_{timestamp}.json"
+        markdown_path = args.output_dir / f"ocr_benchmark_{timestamp}.md"
+        json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        write_ocr_benchmark_markdown(markdown_path, report)
+        print(markdown_path.read_text(encoding="utf-8"))
+        print(f"json={json_path}")
+        print(f"markdown={markdown_path}")
+        return 0
     if args.research:
         runs: List[Dict[str, Any]] = []
         videos = args.research_video or list(RESEARCH_VIDEOS)

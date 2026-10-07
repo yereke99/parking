@@ -45,6 +45,7 @@ ocr:
   paddle_engine: onnxruntime
   easyocr_python_executable: .venv-easyocr/bin/python
   easyocr_languages: en
+  easyocr_onnx_dir: models/easyocr-onnx
   model: models/plate_ocr.onnx
   plate_config: models/plate_ocr_config.yaml
   min_confidence: 0.40

@@ -43,7 +43,10 @@ To run the ANPR project itself after the check:
 make run
 ```
 
-`make benchmark-1` and `make benchmark-4` run only the selected stream count. For a short smoke
+`make ocr-benchmark` compares the OCR engines one at a time on identical plate crops and on every
+frame of each clip, and prints accuracy, OCR and pipeline FPS, latency, RAM, startup, a ranking
+and the total time (see [OCR research](docs/OCR_RESEARCH.md)). `make benchmark-1` and
+`make benchmark-4` run only the selected stream count. For a short smoke
 test, use `make jetson-all MAX_FRAMES=300`. Source, videos, manifests and models are mounted from
 the existing checkout; results are written to `benchmark_results/`. The host is not modified by
 pip, CMake or CUDA installers.
@@ -66,10 +69,13 @@ release requested for this legacy deployment, not an unbounded `3.9` tag.
 See [Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md) for compatibility details and preflight
 checks.
 
-`make run` starts the full project with TensorRT detection and CUDA EasyOCR. If the CUDA OCR worker
-fails or is not ready within 240 s, it continues with the same EasyOCR model on CPU and logs
-`fallback=<reason>` (see [Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md)). Override the input
-without editing configuration, for example:
+`make run` starts the full project with TensorRT detection and EasyOCR (`easyocr_onnx`): the same
+recognizer exported to ONNX and run on TensorRT inside the C++ process, with no PyTorch worker.
+Both models warm up before the first frame, and a video file is processed frame by frame. The
+first run builds and caches the OCR engines. `PROJECT_OCR=easyocr make run` selects the PyTorch
+CUDA worker instead; it falls back to CPU if it is not ready within 240 s (see
+[Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md)). Override the input without editing
+configuration, for example:
 
 ```sh
 make run RUN_ARGS='--source rtsp://user:pass@camera/stream'

@@ -2,6 +2,9 @@
 camera:
   kind: file
   realtime_file: true
+  # `make run` on a clip processes every frame instead of dropping the ones that arrive while
+  # the pipeline is busy. Cameras and RTSP streams always keep only the newest frame.
+  process_every_file_frame: true
 
 inference:
   # Native TensorRT 8.2 drives the detector. The legacy uint8 Fast Plate OCR model alone uses
@@ -46,6 +49,7 @@ ocr:
   paddle_engine: onnxruntime
   easyocr_python_executable: /usr/bin/python3
   easyocr_languages: en
+  easyocr_onnx_dir: /opt/kz-anpr/models/easyocr-onnx
   model: models/plate_ocr.onnx
   plate_config: models/plate_ocr_config.yaml
   min_confidence: 0.40

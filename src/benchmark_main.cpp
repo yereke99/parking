@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -12,14 +13,19 @@
 #include <vector>
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include "anpr/camera/camera_source.hpp"
 #include "anpr/camera/frame_pump.hpp"
 #include "anpr/common/config.hpp"
+#include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
+#include "anpr/common/metrics.hpp"
 #include "anpr/detection/plate_detector.hpp"
+#include "anpr/ocr/plate_ocr.hpp"
 #include "anpr/pipeline/anpr_pipeline.hpp"
 #include "anpr/pipeline/plate_sink.hpp"
+#include "anpr/pipeline/quality_assessor.hpp"
 
 namespace {
 
@@ -38,8 +44,13 @@ void usage() {
   --streams N         simulate N cameras by repeating --video (supported: 1, 2, 4)
   --config PATH       configuration file (default config/default.yaml)
   --backend B         auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
-  --ocr-backend B     fast_plate_ocr | nomeroff | paddleocr | easyocr
+  --ocr-backend B     fast_plate_ocr | nomeroff | paddleocr | easyocr | easyocr_onnx
   --detector-only     time the detector on every frame, skipping the state machine and OCR
+  --extract-crops DIR run the detector on every frame and save each crop that passes the
+                      pipeline's ROI, size and quality gates (as OCR would receive it) to
+                      DIR/<video>/, appending DIR/index.csv
+  --ocr-crops INDEX   load only the OCR backend, warm it up, then read every crop listed in an
+                      --extract-crops index; every backend is scored on the same crops
   --max-frames N      stop after N frames
   --repeat N          replay the clip N times, for a longer sample
   --warmup-frames N   model warm-up calls before measurement (default 3)
@@ -59,6 +70,8 @@ struct Cli {
     int warmup_frames{3};
     std::string crop_directory;
     bool detector_only{false};
+    std::string extract_crops;
+    std::string ocr_crops;
     bool json{false};
     int max_frames{0};
     int repeat{1};
@@ -169,13 +182,221 @@ int runDetectorOnly(const Cli& cli, anpr::AnprConfig config) {
     return 0;
 }
 
+double elapsedMs(std::chrono::steady_clock::time_point started) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+        .count();
+}
+
+void printLatencyJson(const char* name, const anpr::LatencyStat& stat);
+
+std::vector<std::string> splitCsv(const std::string& line) {
+    std::vector<std::string> fields;
+    std::stringstream stream(line);
+    std::string field;
+    while (std::getline(stream, field, ',')) fields.push_back(field);
+    return fields;
+}
+
+/// Saves every plate crop the pipeline would hand to OCR: the detector runs on every frame inside
+/// the detection zone, then each detection goes through the pipeline's size and quality gates and
+/// its optional enhancement. --ocr-crops later scores every OCR backend on exactly this set.
+int runExtractCrops(const Cli& cli, anpr::AnprConfig config) {
+    config.camera.realtime_file = false;
+    anpr::PipelineMetrics metrics;
+    std::string error;
+    const auto load_started = std::chrono::steady_clock::now();
+    auto detector = anpr::makePlateDetector(config.detector, config.inference, &metrics, error);
+    if (detector == nullptr) {
+        std::cerr << error << '\n';
+        return 4;
+    }
+    const cv::Mat blank(std::max(64, config.camera.height), std::max(64, config.camera.width),
+                        CV_8UC3, cv::Scalar(114, 114, 114));
+    for (int index = 0; index < std::max(1, cli.warmup_frames); ++index) detector->detect(blank);
+    const double startup_ms = elapsedMs(load_started);
+    metrics = anpr::PipelineMetrics{};
+
+    auto source = anpr::makeCameraSource(config.camera, error);
+    if (source == nullptr || !source->open()) {
+        std::cerr << "CAMERA_UNAVAILABLE: " << (error.empty() ? config.camera.source : error)
+                  << '\n';
+        return 3;
+    }
+    const anpr::filesystem::path root(cli.extract_crops);
+    const std::string stem = anpr::filesystem::path(config.camera.source).stem().string();
+    std::error_code ignored;
+    anpr::filesystem::create_directories(root / stem, ignored);
+    const anpr::filesystem::path index_path = root / "index.csv";
+    const bool new_index = !anpr::filesystem::exists(index_path, ignored);
+    std::ofstream index(index_path.string(), std::ios::app);
+    if (!index) {
+        std::cerr << "cannot write " << index_path.string() << '\n';
+        return 2;
+    }
+    if (new_index) {
+        index << "file,video,frame,stream_ms,x,y,width,height,detector_confidence,quality_score\n";
+    }
+
+    anpr::QualityAssessor assessor(config.quality);
+    cv::Mat enhanced;
+    anpr::Frame frame;
+    std::int64_t frames = 0;
+    std::int64_t detections = 0;
+    std::int64_t saved = 0;
+    std::int64_t rejected_size = 0;
+    std::int64_t rejected_quality = 0;
+    const auto started = std::chrono::steady_clock::now();
+    while (!g_stop_requested.load()) {
+        const anpr::ReadStatus status = source->read(frame);
+        if (status == anpr::ReadStatus::kEndOfStream || status == anpr::ReadStatus::kFailed) {
+            break;
+        }
+        if (status != anpr::ReadStatus::kOk) continue;
+        ++frames;
+        const anpr::BoundingBox roi =
+            config.roi.detection.toPixels(frame.image.cols, frame.image.rows);
+        const cv::Rect roi_rect(roi.x, roi.y, roi.width, roi.height);
+        if (!roi_rect.empty()) {
+            int number = 0;
+            for (const anpr::Detection& detection : detector->detect(frame.image(roi_rect))) {
+                ++detections;
+                anpr::BoundingBox box = detection.box;
+                box.x += roi.x;
+                box.y += roi.y;
+                box = anpr::clampBox(box, frame.image.cols, frame.image.rows);
+                if (box.empty()) continue;
+                const cv::Mat crop = frame.image(cv::Rect(box.x, box.y, box.width, box.height));
+                const anpr::ImageQuality quality = assessor.evaluate(crop, box);
+                if (!quality.acceptable()) {
+                    ++(quality.rejection == anpr::QualityRejection::kTooSmall ? rejected_size
+                                                                              : rejected_quality);
+                    continue;
+                }
+                const cv::Mat& ocr_input = assessor.enhance(crop, quality, enhanced) ? enhanced : crop;
+                std::ostringstream name;
+                name << stem << '/' << stem << '_' << std::setw(6) << std::setfill('0') << frames
+                     << '_' << number++ << ".png";
+                if (!cv::imwrite((root / name.str()).string(), ocr_input)) {
+                    std::cerr << "cannot write crop " << name.str() << '\n';
+                    return 5;
+                }
+                index << name.str() << ',' << config.camera.source << ',' << frames << ','
+                      << frame.stream_ms << ',' << box.x << ',' << box.y << ',' << box.width << ','
+                      << box.height << ',' << detection.confidence << ',' << quality.score << '\n';
+                ++saved;
+            }
+        }
+        if (cli.max_frames > 0 && frames >= cli.max_frames) break;
+    }
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "{\"mode\":\"extract_crops\",\"video\":\"" << jsonEscape(config.camera.source)
+              << "\",\"detector_backend\":\"" << jsonEscape(detector->backendName())
+              << "\",\"startup_ms\":" << startup_ms << ",\"seconds\":" << seconds
+              << ",\"frames\":" << frames
+              << ",\"detector_fps\":" << (seconds > 0.0 ? frames / seconds : 0.0)
+              << ",\"detections\":" << detections << ",\"crops\":" << saved
+              << ",\"rejected_size\":" << rejected_size
+              << ",\"rejected_quality\":" << rejected_quality << ",\"latency\":{";
+    printLatencyJson("detection", metrics.detector_total);
+    std::cout << "}}\n";
+    return 0;
+}
+
+/// Times one OCR backend alone on a fixed crop set. Loading and warm-up are reported separately
+/// and excluded from the latency figures.
+int runOcrCrops(const Cli& cli, const anpr::AnprConfig& config) {
+    struct Crop {
+        std::string file;
+        std::string video;
+    };
+    const anpr::filesystem::path index_path(cli.ocr_crops);
+    std::ifstream index(index_path.string());
+    std::string line;
+    if (!index || !std::getline(index, line)) {
+        std::cerr << "cannot read crop index " << cli.ocr_crops << '\n';
+        return 2;
+    }
+    std::vector<Crop> crops;
+    while (std::getline(index, line)) {
+        const std::vector<std::string> fields = splitCsv(line);
+        if (fields.size() >= 2) crops.push_back({fields[0], fields[1]});
+    }
+
+    anpr::PipelineMetrics metrics;
+    std::string error;
+    const auto load_started = std::chrono::steady_clock::now();
+    auto ocr = anpr::makePlateOcr(config.ocr, config.inference, &metrics, error);
+    if (ocr == nullptr) {
+        std::cerr << error << '\n';
+        return 4;
+    }
+    const double load_ms = elapsedMs(load_started);
+    const auto warmup_started = std::chrono::steady_clock::now();
+    const cv::Mat blank(64, 192, CV_8UC3, cv::Scalar(114, 114, 114));
+    for (int index_number = 0; index_number < std::max(1, cli.warmup_frames); ++index_number) {
+        ocr->recognize(blank);
+    }
+    const double warmup_ms = elapsedMs(warmup_started);
+
+    anpr::LatencyStat latency;
+    std::ostringstream results;
+    results << std::fixed << std::setprecision(4);
+    std::int64_t unreadable = 0;
+    std::int64_t accepted = 0;
+    std::int64_t empty = 0;
+    const auto started = std::chrono::steady_clock::now();
+    for (std::size_t number = 0; number < crops.size() && !g_stop_requested.load(); ++number) {
+        const cv::Mat image = cv::imread((index_path.parent_path() / crops[number].file).string(),
+                                         cv::IMREAD_COLOR);
+        if (image.empty()) {
+            ++unreadable;
+            continue;
+        }
+        const auto call_started = std::chrono::steady_clock::now();
+        const anpr::OcrResult result = ocr->recognize(image);
+        const double ms = elapsedMs(call_started);
+        latency.add(ms);
+        accepted += result.ok() ? 1 : 0;
+        empty += result.text.empty() ? 1 : 0;
+        results << (number == 0 ? "" : ",") << "{\"file\":\"" << jsonEscape(crops[number].file)
+                << "\",\"video\":\"" << jsonEscape(crops[number].video) << "\",\"text\":\""
+                << jsonEscape(result.text) << "\",\"confidence\":" << result.confidence
+                << ",\"rejection\":\"" << anpr::toString(result.rejection) << "\",\"ms\":" << ms
+                << '}';
+    }
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "{\"mode\":\"ocr_crops\",\"ocr_backend\":\"" << jsonEscape(config.ocr.backend)
+              << "\",\"backend\":\"" << jsonEscape(ocr->backendName()) << "\",\"model\":\""
+              << jsonEscape(ocr->modelDescription()) << "\",\"load_ms\":" << load_ms
+              << ",\"warmup_ms\":" << warmup_ms << ",\"seconds\":" << seconds
+              << ",\"crops\":" << latency.count() << ",\"unreadable_files\":" << unreadable
+              << ",\"accepted\":" << accepted << ",\"empty\":" << empty
+              << ",\"ocr_fps\":" << (latency.sumMs() > 0.0 ? latency.count() * 1000.0 / latency.sumMs() : 0.0)
+              << ",\"latency\":{";
+    printLatencyJson("ocr", latency);
+    std::cout << "},\"results\":[" << results.str() << "]}\n";
+    return 0;
+}
+
+void printMetricsJson(const anpr::PipelineMetrics& metrics, double seconds);
+
 void printReport(const Cli& cli, const anpr::AnprPipeline& pipeline,
-                 const anpr::CollectingSink& sink, double seconds) {
+                 const anpr::CollectingSink& sink, double seconds, double load_ms,
+                 double warmup_ms) {
     const anpr::PipelineMetrics& m = pipeline.metrics();
     std::cout << std::fixed << std::setprecision(3);
 
     if (cli.json) {
-        std::cout << "{\"mode\":\"pipeline\",\"video\":\"" << cli.video << "\",\"seconds\":"
+        std::cout << "{\"mode\":\"pipeline\",\"video\":\"" << jsonEscape(cli.video)
+                  << "\",\"backend\":\"" << jsonEscape(pipeline.backendSummary())
+                  << "\",\"load_ms\":" << load_ms << ",\"warmup_ms\":" << warmup_ms
+                  << ",\"seconds\":"
                   << seconds << ",\"frames\":" << m.frames_processed
                   << ",\"effective_fps\":" << (seconds > 0.0 ? m.frames_processed / seconds : 0.0)
                   << ",\"detector_calls\":" << m.detector_total.count()
@@ -183,7 +404,9 @@ void printReport(const Cli& cli, const anpr::AnprPipeline& pipeline,
                   << ",\"ocr_calls\":" << m.ocr_total.count()
                   << ",\"ocr_avg_ms\":" << m.ocr_total.avgMs()
                   << ",\"plates_confirmed\":" << m.plates_confirmed
-                  << ",\"recognition_sessions\":" << m.recognition_sessions << ",\"events\":[";
+                  << ",\"recognition_sessions\":" << m.recognition_sessions << ",\"metrics\":";
+        printMetricsJson(m, seconds);
+        std::cout << ",\"events\":[";
         for (std::size_t i = 0; i < sink.events().size(); ++i) {
             std::cout << (i == 0 ? "" : ",") << anpr::toJson(sink.events()[i]);
         }
@@ -317,6 +540,8 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
         stream_config.camera.camera_id = "benchmark-" + std::to_string(index + 1);
         stream_config.camera.loop_file = false;
         stream_config.camera.realtime_file = true;
+        // Simulated cameras: each pump keeps only its newest frame, as a live camera does.
+        stream_config.camera.process_every_file_frame = false;
         runtime->id = stream_config.camera.camera_id;
         runtime->pipeline =
             std::make_unique<anpr::AnprPipeline>(stream_config, runtime->sink);
@@ -498,6 +723,10 @@ int main(int argc, char** argv) {
             cli.warmup_frames = std::max(0, parsed);
         } else if (arg == "--save-crops") {
             cli.crop_directory = value;
+        } else if (arg == "--extract-crops") {
+            cli.extract_crops = value;
+        } else if (arg == "--ocr-crops") {
+            cli.ocr_crops = value;
         } else if (arg == "--config") {
             cli.config_path = value;
         } else if (arg == "--backend") {
@@ -516,7 +745,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (cli.video.empty() && cli.sources.empty()) {
+    if (cli.video.empty() && cli.sources.empty() && cli.ocr_crops.empty()) {
         usage();
         return 2;
     }
@@ -536,7 +765,9 @@ int main(int argc, char** argv) {
         std::cerr << environment_error << '\n';
         return 2;
     }
-    config.camera.source = cli.video.empty() ? cli.sources.front() : cli.video;
+    if (!cli.video.empty() || !cli.sources.empty()) {
+        config.camera.source = cli.video.empty() ? cli.sources.front() : cli.video;
+    }
     config.camera.kind = anpr::CameraKind::kAuto;
     config.debug.visualize = false;
     if (!cli.crop_directory.empty()) {
@@ -567,6 +798,12 @@ int main(int argc, char** argv) {
     if (cli.detector_only) {
         return runDetectorOnly(cli, config);
     }
+    if (!cli.extract_crops.empty()) {
+        return runExtractCrops(cli, config);
+    }
+    if (!cli.ocr_crops.empty()) {
+        return runOcrCrops(cli, config);
+    }
     if (cli.streams > 0 || !cli.sources.empty()) {
         try {
             return runMultiStream(cli, config);
@@ -577,19 +814,26 @@ int main(int argc, char** argv) {
     }
 
     try {
+        // Frames are read directly below, so a real-time file would only add sleeps to the
+        // timings; every frame is processed either way.
+        config.camera.realtime_file = false;
         anpr::CollectingSink sink;
         anpr::AnprPipeline pipeline(config, sink);
         std::string error;
+        const auto load_started = std::chrono::steady_clock::now();
         if (!pipeline.loadModels(error)) {
             std::cerr << error << '\n';
             return 4;
         }
+        const double load_ms = elapsedMs(load_started);
+        const auto warmup_started = std::chrono::steady_clock::now();
         for (int index = 0; index < cli.warmup_frames; ++index) {
             if (!pipeline.warmup(error)) {
                 std::cerr << error << '\n';
                 return 4;
             }
         }
+        const double warmup_ms = elapsedMs(warmup_started);
 
         const auto started = std::chrono::steady_clock::now();
         std::int64_t processed = 0;
@@ -632,7 +876,7 @@ int main(int argc, char** argv) {
             std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
         pipeline.metrics().frames_captured = processed;
-        printReport(cli, pipeline, sink, seconds);
+        printReport(cli, pipeline, sink, seconds, load_ms, warmup_ms);
     } catch (const std::exception& failure) {
         std::cerr << failure.what() << '\n';
         return 1;

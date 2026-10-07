@@ -124,6 +124,7 @@ ocr:
   paddle_engine: onnxruntime
   easyocr_python_executable: .venv-easyocr/bin/python
   easyocr_languages: en
+  easyocr_onnx_dir: models/easyocr-onnx
 
   # Legacy Fast Plate OCR model contract, read only when backend=fast_plate_ocr.
   model: models/plate_ocr.onnx

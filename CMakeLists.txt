@@ -49,6 +49,7 @@ add_library(kz_anpr_core
     src/common/logging.cpp
     src/common/metrics.cpp
     src/common/yaml.cpp
+    src/ocr/easyocr_decoding.cpp
     src/pipeline/plate_consensus.cpp
     src/pipeline/recognition_event.cpp
     src/pipeline/vehicle_state_machine.cpp
@@ -81,6 +82,7 @@ if(KZ_ANPR_BUILD_RUNTIME)
             src/detection/plate_detector.cpp
             src/inference/inference_session.cpp
             src/inference/opencv_dnn_session.cpp
+            src/ocr/easyocr_onnx.cpp
             src/ocr/fast_plate_ocr.cpp
             src/ocr/nomeroff_ocr.cpp
             src/ocr/plate_ocr.cpp
@@ -205,6 +207,7 @@ if(KZ_ANPR_BUILD_TESTS)
         tests/test_main.cpp
         tests/test_config.cpp
         tests/test_consensus.cpp
+        tests/test_easyocr_decoding.cpp
         tests/test_state_machine.cpp
         tests/test_tracking.cpp
         tests/test_validation.cpp

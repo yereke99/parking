@@ -284,6 +284,7 @@ void readAll(Reader& reader, AnprConfig& config, std::string& error) {
     reader.get("camera.read_timeout_ms", config.camera.read_timeout_ms);
     reader.get("camera.loop_file", config.camera.loop_file);
     reader.get("camera.realtime_file", config.camera.realtime_file);
+    reader.get("camera.process_every_file_frame", config.camera.process_every_file_frame);
 
     std::string backend = toString(config.inference.backend);
     reader.get("inference.backend", backend);
@@ -344,6 +345,7 @@ void readAll(Reader& reader, AnprConfig& config, std::string& error) {
     reader.get("ocr.paddle_engine", config.ocr.paddle_engine);
     reader.get("ocr.easyocr_python_executable", config.ocr.easyocr_python_executable);
     reader.get("ocr.easyocr_languages", config.ocr.easyocr_languages);
+    reader.get("ocr.easyocr_onnx_dir", config.ocr.easyocr_onnx_dir);
     reader.get("ocr.model", config.ocr.model);
     reader.get("ocr.plate_config", config.ocr.plate_config);
     reader.get("ocr.min_confidence", config.ocr.min_confidence);
@@ -615,8 +617,10 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
         return false;
     }
     if (!require(config.ocr.backend == "nomeroff" || config.ocr.backend == "fast_plate_ocr" ||
-                     config.ocr.backend == "paddleocr" || config.ocr.backend == "easyocr",
-                 "ocr.backend must be nomeroff, fast_plate_ocr, paddleocr or easyocr")) {
+                     config.ocr.backend == "paddleocr" || config.ocr.backend == "easyocr" ||
+                     config.ocr.backend == "easyocr_onnx",
+                 "ocr.backend must be nomeroff, fast_plate_ocr, paddleocr, easyocr or "
+                 "easyocr_onnx")) {
         return false;
     }
     if (!require(config.ocr.device == "auto" || config.ocr.device == "cpu" ||
@@ -658,6 +662,11 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
         !require(!config.ocr.easyocr_python_executable.empty() &&
                      !config.ocr.easyocr_languages.empty(),
                  "EasyOCR requires ocr.easyocr_python_executable and ocr.easyocr_languages")) {
+        return false;
+    }
+    if (config.ocr.backend == "easyocr_onnx" &&
+        !require(!config.ocr.easyocr_onnx_dir.empty(),
+                 "easyocr_onnx requires ocr.easyocr_onnx_dir")) {
         return false;
     }
     if (!require(config.quality.min_plate_width_px > 0 && config.quality.min_plate_height_px > 0,

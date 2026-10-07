@@ -30,6 +30,9 @@ struct PumpStats {
 /// For a real-time barrier this is the right trade: the newest view of the vehicle matters, the
 /// one from 400 ms ago does not. Reconnection with exponential backoff also lives here, so a
 /// camera outage never reaches the pipeline as anything worse than a gap in frames.
+///
+/// A video file has nothing to go stale. With `camera.process_every_file_frame` the capture
+/// thread waits for the slot instead, so a clip is processed frame by frame.
 class FramePump {
 public:
     FramePump(CameraConfig config, std::unique_ptr<CameraSource> source);
@@ -60,8 +63,10 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable frame_available_;
+    std::condition_variable slot_free_;
     Frame slot_;
     bool slot_filled_{false};
+    bool wait_for_slot_{false};
     PumpStats stats_;
     bool ended_{false};
 

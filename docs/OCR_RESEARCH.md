@@ -61,6 +61,27 @@ tools/jetson_docker.sh benchmark \
   --max-frames 300
 ```
 
+## Sequential OCR benchmark
+
+`make ocr-benchmark` answers the deployment question with one engine in memory at a time:
+
+1. The TensorRT detector runs on every frame of each clip. Every detection that passes the
+   pipeline's ROI, size and quality gates is saved as the crop OCR would receive
+   (`kz_anpr_benchmark --extract-crops`).
+2. Each engine then runs in its own process, one after another with a pause in between:
+   - OCR alone on that identical crop set (`--ocr-crops`), after loading and warm-up. This
+     gives accuracy, CER, OCR FPS and p50/p95 latency on exactly the same inputs.
+   - The full pipeline over every frame of each clip, with no real-time pacing and no dropped
+     frames. This gives pipeline FPS and confirmed plates.
+3. Process-tree RSS (average and peak) and `tegrastats` are sampled throughout. Startup (model
+   load plus warm-up) is reported separately and never counted in FPS or latency. Fallbacks,
+   crashes and out-of-memory kills are listed rather than hidden.
+
+The report prints the comparison table, details, the ranking (accuracy, OCR FPS, latency, RAM,
+then the best engine for KZ plates by KZ exact accuracy, CER, p95 and peak RAM) and the total
+wall-clock time. Crop accuracy uses the manifest: a clip with one label is assumed to show only
+that plate, and unlabelled clips are used for speed only.
+
 ## Bundled videos and labels
 
 | Video | Use | Label |

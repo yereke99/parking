@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "anpr/common/filesystem.hpp"
+#include "anpr/common/logging.hpp"
 
 namespace anpr {
 namespace {
@@ -147,6 +148,9 @@ public:
                 engine_.reset(runtime_->deserializeCudaEngine(cached.data(), cached.size()));
             }
             if (!engine_) {
+                // A first build takes minutes on the Nano; say so before the log goes quiet.
+                logEvent(LogLevel::kInfo, "tensorrt_engine_build",
+                         LogFields().add("tag", request.tag).add("cache", cache.string()));
                 build(request, cache);
             }
             context_.reset(engine_->createExecutionContext());

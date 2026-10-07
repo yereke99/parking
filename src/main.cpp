@@ -40,7 +40,8 @@ void usage() {
   --visualize        open a debug window (needs an OpenCV build with highgui)
   --print-backends   list the inference providers available here, then exit
   --warmup           load both models, run one inference each, then exit. Use this after
-                     deployment to build and cache the TensorRT engines.
+                     deployment to build and cache the TensorRT engines. Every run warms up
+                     the same way before opening the camera.
   --help
 
 Exit codes: 0 success, 1 unexpected error, 2 configuration error, 3 camera unavailable,
@@ -242,12 +243,18 @@ int main(int argc, char** argv) {
                 streams.push_back(std::move(stream));
             }
 
-            if (cli.warmup) {
-                if (!streams.front()->pipeline->warmup(error)) {
+            // Warm every pipeline before the first frame. TensorRT finishes its lazy setup on the
+            // first inference; on a stream that stall would drop every frame behind it.
+            for (auto& stream : streams) {
+                if (!stream->pipeline->warmup(error)) {
                     anpr::logEvent(anpr::LogLevel::kError, "warmup_failed",
-                                   anpr::LogFields().add("reason", error));
+                                   anpr::LogFields()
+                                       .add("camera_id", stream->camera_id)
+                                       .add("reason", error));
                     return 4;
                 }
+            }
+            if (cli.warmup) {
                 return 0;
             }
 
@@ -312,12 +319,13 @@ int main(int argc, char** argv) {
             return 4;
         }
 
+        // Warm up before the first frame; see the multi-stream path above.
+        if (!pipeline.warmup(error)) {
+            anpr::logEvent(anpr::LogLevel::kError, "warmup_failed",
+                           anpr::LogFields().add("reason", error));
+            return 4;
+        }
         if (cli.warmup) {
-            if (!pipeline.warmup(error)) {
-                anpr::logEvent(anpr::LogLevel::kError, "warmup_failed",
-                               anpr::LogFields().add("reason", error));
-                return 4;
-            }
             return 0;
         }
 

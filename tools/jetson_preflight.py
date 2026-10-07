@@ -106,6 +106,9 @@ print(json.dumps({
         ROOT / "video/parking.mp4",
         ROOT / "video/parking2.mp4",
         Path("/opt/kz-anpr/models/research/easyocr/english_g2.pth"),
+    ] + [
+        Path("/opt/kz-anpr/models/easyocr-onnx/english_g2_{0}.onnx".format(width))
+        for width in (64, 128, 192, 256, 320, 384)
     ]
     missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
     check("models/videos/manifests", not missing,

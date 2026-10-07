@@ -161,6 +161,13 @@ RUN mkdir -p /opt/kz-anpr/models/research/easyocr \
     && unzip -q /tmp/english_g2.zip -d /opt/kz-anpr/models/research/easyocr \
     && rm /tmp/english_g2.zip
 
+# The `easyocr_onnx` backend runs the same recognizer inside the C++ process on TensorRT, without
+# a PyTorch worker. Export it from the verified weights with this image's PyTorch 1.10.
+COPY tools/export_easyocr_onnx.py /opt/kz-anpr/tools/
+RUN /usr/bin/python3 /opt/kz-anpr/tools/export_easyocr_onnx.py \
+        --weights /opt/kz-anpr/models/research/easyocr/english_g2.pth \
+        --output-dir /opt/kz-anpr/models/easyocr-onnx
+
 COPY --from=builder /opt/onnxruntime/lib/ /opt/onnxruntime/lib/
 COPY --from=builder /opt/python3.9/ /opt/python3.9/
 COPY --from=builder /tmp/build/kz_anpr /opt/kz-anpr/bin/kz_anpr
