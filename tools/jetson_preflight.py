@@ -100,6 +100,7 @@ print(json.dumps({
     required = [
         ROOT / "models/license_plate_detector.onnx",
         Path("/opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx"),
+        Path("/opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global_float.onnx"),
         ROOT / "models/plate_ocr_config.yaml",
         ROOT / "data/manifests/video_research.csv",
         ROOT / "video/car.mp4",
@@ -152,7 +153,7 @@ print(json.dumps({
         check("project detector GPU inference", False, str(exc), failures)
 
     compatibility = {
-        "fast_plate_ocr": "TensorRT detector + pinned ONNX Runtime 1.11.1 CPU OCR",
+        "fast_plate_ocr": "TensorRT detector + TensorRT FP32 OCR (float32-input model copy; pinned ONNX Runtime 1.11.1 CPU fallback)",
         "easyocr": "TensorRT detector + pinned EasyOCR 1.6.2 NVIDIA PyTorch CUDA OCR",
         "nomeroff": "unavailable: v4.0.1 needs torch >=1.12; JetPack 4 CUDA worker is torch 1.10",
         "paddleocr": "unavailable: v3.7 requires newer Python; PaddlePaddle has no official JetPack 4 aarch64 wheel",

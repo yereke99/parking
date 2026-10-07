@@ -7,8 +7,9 @@ camera:
   process_every_file_frame: true
 
 inference:
-  # Native TensorRT 8.2 drives the detector. The legacy uint8 Fast Plate OCR model alone uses
-  # pinned CPU ORT; EasyOCR uses CUDA-enabled NVIDIA PyTorch.
+  # Native TensorRT 8.2 drives the detector and the Fast Plate OCR / easyocr_onnx recognizers
+  # (FP32 for Fast Plate OCR); either OCR falls back to pinned CPU ORT if TensorRT refuses it.
+  # EasyOCR uses CUDA-enabled NVIDIA PyTorch.
   backend: tensorrt
   fp16: true
   strict_backend: true
@@ -50,8 +51,9 @@ ocr:
   easyocr_python_executable: /usr/bin/python3
   easyocr_languages: en
   easyocr_onnx_dir: /opt/kz-anpr/models/easyocr-onnx
-  # Downloaded and SHA-256 checked by the image build.
-  model: /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx
+  # Downloaded and SHA-256 checked by the image build, then given a float32 input for TensorRT
+  # (tools/convert_fast_plate_ocr.py). cct_s_v2_global.onnx, the uint8 original, runs on CPU ORT.
+  model: /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global_float.onnx
   plate_config: models/plate_ocr_config.yaml
   min_confidence: 0.40
   min_char_confidence: 0.20

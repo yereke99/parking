@@ -126,7 +126,7 @@ Markdown file.
 - TensorRT import and version supplied by JetPack;
 - native TensorRT/CUDA linkage and one real detector inference on the GPU;
 - 4 GB memory profile;
-- native ONNX Runtime CPU fallback for the legacy uint8 OCR model;
+- native ONNX Runtime CPU fallback, used by any OCR model TensorRT refuses;
 - detector, Fast Plate OCR, EasyOCR, videos and research manifest files.
 
 It also prints the compatibility state of every OCR backend.
@@ -138,7 +138,7 @@ row.
 
 | Backend | Nano result | Reason |
 | --- | --- | --- |
-| `fast_plate_ocr` | TensorRT detector, CPU OCR | Official aarch64 ONNX Runtime 1.11.1 C/C++ package handles only this legacy uint8 recognizer |
+| `fast_plate_ocr` | TensorRT detector, TensorRT OCR | The image gives the published uint8-input model a float32 input (`tools/convert_fast_plate_ocr.py`), which TensorRT 8.2 accepts; FP32 engine, ONNX Runtime 1.11.1 CPU fallback |
 | `easyocr` | TensorRT detector, CUDA OCR | EasyOCR 1.6.2 reuses NVIDIA PyTorch 1.10; the second text detector is disabled |
 | `easyocr_onnx` | TensorRT detector, TensorRT OCR | The same EasyOCR recognizer exported to ONNX at image build, run in-process |
 | `nomeroff` | Explicitly unavailable | Control Python is 3.9, but Nomeroff 4.0.1 also needs PyTorch >=1.12; Nano's CUDA stack is fixed at NVIDIA PyTorch 1.10 under Python 3.6 |
@@ -152,7 +152,7 @@ JetPack 4 package can be added without changing the C++ benchmark protocol.
 ## Runtime and results
 
 The container limits BLAS/OpenMP worker counts to one. The Nano profile uses a 256 MiB TensorRT
-builder workspace, FP16, two CPU threads for the Fast Plate OCR fallback, and one OpenCV thread.
+builder workspace, FP16, two CPU threads for the ONNX Runtime fallback, and one OpenCV thread.
 Four video streams share the TensorRT detector and the active OCR worker as the existing benchmark
 already defines; model weights are not multiplied four times.
 
@@ -178,11 +178,16 @@ The detector graph is opset 12, but its newer exporter stamped ONNX IR 10. At lo
 session normalizes that metadata byte to IR 8 in memory, which TensorRT 8.2 accepts; the mounted
 ONNX file is never rewritten.
 
-The legacy Fast Plate OCR network has a uint8 input that this TensorRT 8.2 path does not accept,
-so that recognizer alone uses the pinned Microsoft aarch64 ONNX Runtime CPU package. EasyOCR uses
-CUDA through NVIDIA PyTorch. `make run` selects EasyOCR by default, so both the detector and OCR
-of the normal project path use the Nano GPU. `PROJECT_OCR=fast_plate_ocr make run` selects the
-explicit mixed GPU-detector/CPU-OCR fallback.
+The published Fast Plate OCR network takes a uint8 input, which TensorRT 8.2 cannot bind. The
+image build therefore writes `cct_s_v2_global_float.onnx` beside it with
+`tools/convert_fast_plate_ocr.py`: the one graph input is retyped to float32, a one-byte change,
+and the model's first node, already a Cast to float32, becomes a no-op. The C++ recognizer feeds
+the same 0-255 pixel values as float32, so its readings match the original model (identical on the
+bundled clips under ONNX Runtime). `PROJECT_OCR=fast_plate_ocr make run` builds an FP32 engine
+for it, about 2 GFLOP per crop, so FP16 would save little; the first run logs
+`event=tensorrt_engine_build tag=ocr` and caches the engine next to the detector's. If TensorRT
+rejects the model, the recognizer runs on the pinned Microsoft aarch64 ONNX Runtime CPU package as
+before and `model_loaded` says so; the uint8 original always runs there.
 
 `make run` uses `easyocr_onnx`. The image build exports EasyOCR's recognizer with its own
 PyTorch 1.10 (`tools/export_easyocr_onnx.py`) once per input width EasyOCR can use, 64 to 384 px,

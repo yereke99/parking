@@ -122,10 +122,16 @@ if [[ "$action" == "check" ]]; then
         /opt/python3.9/bin/python3.9 /opt/kz-anpr/tools/jetson_preflight.py
 fi
 
-if [[ "$action" == "run" && "${PROJECT_OCR:-easyocr}" == "easyocr_onnx" ]] &&
+# Models built into the image at `make docker-build`; the checkout's config names them.
+case "${PROJECT_OCR:-easyocr}" in
+    easyocr_onnx) image_model=/opt/kz-anpr/models/easyocr-onnx/english_g2_320.onnx ;;
+    fast_plate_ocr) image_model=/opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global_float.onnx ;;
+    *) image_model="" ;;
+esac
+if [[ "$action" == "run" && -n "$image_model" ]] &&
    ! "$docker_bin" run --rm --entrypoint /bin/sh "$image" \
-       -c 'test -f /opt/kz-anpr/models/easyocr-onnx/english_g2_320.onnx' >/dev/null 2>&1; then
-    echo "ERROR: image $image predates the easyocr_onnx OCR in this checkout." >&2
+       -c 'test -f "$1"' sh "$image_model" >/dev/null 2>&1; then
+    echo "ERROR: image $image predates the ${PROJECT_OCR} OCR in this checkout." >&2
     echo "Rebuild it first: make docker-build" >&2
     exit 3
 fi

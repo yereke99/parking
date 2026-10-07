@@ -140,11 +140,9 @@ FastPlateOcr::FastPlateOcr(FastPlateOcrModelConfig model, OcrConfig config,
     if (session_->inputs().size() != 1) {
         throw std::runtime_error("Fast Plate OCR model must have exactly one input");
     }
+    // uint8 is the published model; float32 is its TensorRT-ready copy. Both take 0..255 pixel
+    // values and normalise them inside the graph.
     const TensorSpec& input = session_->inputs().front();
-    if (input.type != TensorType::kUInt8) {
-        throw std::runtime_error(
-            "Fast Plate OCR model input must be uint8; this model normalises pixels internally");
-    }
     if (input.shape.size() != 4) {
         throw std::runtime_error("Fast Plate OCR model input must be NHWC with four dimensions");
     }
@@ -187,10 +185,17 @@ FastPlateOcr::FastPlateOcr(FastPlateOcrModelConfig model, OcrConfig config,
     }
 
     const int type = model_.grayscale ? CV_8UC1 : CV_8UC3;
-    // A header directly over the session's input tensor: the resize writes the model input in
-    // place, with no staging buffer and no copy.
-    model_input_ = cv::Mat(model_.img_height, model_.img_width, type,
-                           session_->inputBuffer(0));
+    if (input.type == TensorType::kUInt8) {
+        // A header directly over the session's input tensor: the resize writes the model input in
+        // place, with no staging buffer and no copy.
+        model_input_ = cv::Mat(model_.img_height, model_.img_width, type,
+                               session_->inputBuffer(0));
+    } else {
+        // Stage the same uint8 image, then convert it value for value into the float tensor.
+        model_input_.create(model_.img_height, model_.img_width, type);
+        float_input_ = cv::Mat(model_.img_height, model_.img_width,
+                               model_.grayscale ? CV_32FC1 : CV_32FC3, session_->inputBuffer(0));
+    }
     converted_.create(1, 1, type);
     scratch_.create(1, 1, type);
 }
@@ -200,7 +205,8 @@ std::string FastPlateOcr::modelDescription() const {
            (model_.grayscale ? " grayscale" : " rgb") + ", " +
            std::to_string(model_.max_plate_slots) + " slots, alphabet " +
            std::to_string(model_.alphabet.size()) +
-           (model_.keep_aspect_ratio ? ", aspect preserved" : ", stretched");
+           (model_.keep_aspect_ratio ? ", aspect preserved" : ", stretched") +
+           (float_input_.empty() ? ", uint8 input" : ", float32 input");
 }
 
 void FastPlateOcr::preprocess(const cv::Mat& plate) {
@@ -222,24 +228,28 @@ void FastPlateOcr::preprocess(const cv::Mat& plate) {
     if (!model_.keep_aspect_ratio) {
         cv::resize(converted_, model_input_, cv::Size(model_.img_width, model_.img_height), 0.0,
                    0.0, model_.interpolation);
-        return;
+    } else {
+        // Letterbox exactly as the reference implementation does, including its rounding.
+        const double ratio = std::min(static_cast<double>(model_.img_height) / converted_.rows,
+                                      static_cast<double>(model_.img_width) / converted_.cols);
+        const int new_w = std::max(1, static_cast<int>(std::lround(converted_.cols * ratio)));
+        const int new_h = std::max(1, static_cast<int>(std::lround(converted_.rows * ratio)));
+        cv::resize(converted_, scratch_, cv::Size(new_w, new_h), 0.0, 0.0, model_.interpolation);
+
+        model_input_.setTo(model_.grayscale ? cv::Scalar(model_.padding_color[0])
+                                            : model_.padding_color);
+        const int left = std::max(0, (model_.img_width - new_w) / 2);
+        const int top = std::max(0, (model_.img_height - new_h) / 2);
+        const int copy_w = std::min(new_w, model_.img_width - left);
+        const int copy_h = std::min(new_h, model_.img_height - top);
+        scratch_(cv::Rect(0, 0, copy_w, copy_h))
+            .copyTo(model_input_(cv::Rect(left, top, copy_w, copy_h)));
     }
 
-    // Letterbox exactly as the reference implementation does, including its rounding.
-    const double ratio = std::min(static_cast<double>(model_.img_height) / converted_.rows,
-                                  static_cast<double>(model_.img_width) / converted_.cols);
-    const int new_w = std::max(1, static_cast<int>(std::lround(converted_.cols * ratio)));
-    const int new_h = std::max(1, static_cast<int>(std::lround(converted_.rows * ratio)));
-    cv::resize(converted_, scratch_, cv::Size(new_w, new_h), 0.0, 0.0, model_.interpolation);
-
-    model_input_.setTo(model_.grayscale ? cv::Scalar(model_.padding_color[0])
-                                        : model_.padding_color);
-    const int left = std::max(0, (model_.img_width - new_w) / 2);
-    const int top = std::max(0, (model_.img_height - new_h) / 2);
-    const int copy_w = std::min(new_w, model_.img_width - left);
-    const int copy_h = std::min(new_h, model_.img_height - top);
-    scratch_(cv::Rect(0, 0, copy_w, copy_h))
-        .copyTo(model_input_(cv::Rect(left, top, copy_w, copy_h)));
+    if (!float_input_.empty()) {
+        // A plain value copy, 0..255 as float; the model's own first nodes cast and rescale.
+        model_input_.convertTo(float_input_, CV_32F);
+    }
 }
 
 OcrResult FastPlateOcr::decode(const FastPlateOcrModelConfig& model, const float* plate_head,
@@ -372,7 +382,17 @@ std::unique_ptr<IPlateOcr> makeFastPlateOcr(const OcrConfig& ocr, const Inferenc
     request.model_path = ocr.model;
     request.inference = inference;
     request.tag = "ocr";
-    request.requires_uint8_input = true;
+    // The published model's uint8 input cannot bind to TensorRT 8.2, so that model runs on ONNX
+    // Runtime. Its float32-input copy (tools/convert_fast_plate_ocr.py) runs on TensorRT. An
+    // unreadable model is left to the session, which reports the real error.
+    std::string type_error;
+    request.requires_uint8_input = onnxInputElementType(ocr.model, type_error) == kOnnxUint8;
+    // `strict_backend` guards the detector. If TensorRT cannot take this OCR model it falls back
+    // to ONNX Runtime as before; the model_loaded line names the backend in use.
+    request.inference.strict_backend = false;
+    // FP32: the recognizer needs only about 2 GFLOP per crop, so FP16 would save little and could
+    // flip a marginal character between the TensorRT and ONNX Runtime readings.
+    request.inference.fp16 = false;
 
     std::unique_ptr<IInferenceSession> session = createInferenceSession(request, error);
     if (session == nullptr) {

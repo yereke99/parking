@@ -223,6 +223,7 @@ if(KZ_ANPR_BUILD_TESTS)
     if(TARGET kz_anpr_runtime)
         add_executable(kz_anpr_runtime_tests
             tests/test_main.cpp
+            tests/test_fast_plate_input.cpp
             tests/test_ocr_decoding.cpp
             tests/test_quality.cpp
         )

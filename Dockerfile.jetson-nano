@@ -176,6 +176,14 @@ RUN /usr/bin/python3 /opt/kz-anpr/tools/export_easyocr_onnx.py \
         --weights /opt/kz-anpr/models/research/easyocr/english_g2.pth \
         --output-dir /opt/kz-anpr/models/easyocr-onnx
 
+# TensorRT 8.2 has no uint8 tensors, so it cannot load the Fast Plate OCR model as published.
+# Retype its one uint8 input to float32 (a one-byte patch; the model's first node already casts
+# to float32), so `fast_plate_ocr` runs on TensorRT. The original stays for comparison.
+COPY tools/convert_fast_plate_ocr.py /opt/kz-anpr/tools/
+RUN /usr/bin/python3 /opt/kz-anpr/tools/convert_fast_plate_ocr.py \
+        /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global.onnx \
+        /opt/kz-anpr/models/fast-plate-ocr/cct_s_v2_global_float.onnx
+
 COPY --from=builder /opt/onnxruntime/lib/ /opt/onnxruntime/lib/
 COPY --from=builder /opt/python3.9/ /opt/python3.9/
 COPY --from=builder /tmp/build/kz_anpr /opt/kz-anpr/bin/kz_anpr

@@ -46,9 +46,11 @@ FastPlateOcrConfigLoad loadFastPlateOcrConfig(const std::string& path);
 
 /// Native Fast Plate OCR inference.
 ///
-/// The model takes a uint8 NHWC tensor and normalises pixel values internally, so preprocessing
-/// is a colour conversion plus a resize written straight into the session's input tensor. There
-/// is no Python, no subprocess and no per-call allocation.
+/// The model normalises pixel values internally, so preprocessing is a colour conversion plus a
+/// resize. The published model takes a uint8 NHWC tensor, which the resize writes in place.
+/// TensorRT 8.2 has no uint8 tensors, so the Jetson image also carries a copy whose input is
+/// retyped to float32 (tools/convert_fast_plate_ocr.py); for that model the same 0..255 values are
+/// converted into the float tensor. There is no Python, no subprocess and no per-call allocation.
 ///
 /// Decoding mirrors the reference implementation: reshape to (slots, vocabulary), take the
 /// argmax per slot, map through the alphabet, then drop trailing padding. It deviates in one
@@ -79,7 +81,8 @@ private:
     std::size_t region_output_{static_cast<std::size_t>(-1)};
 
     cv::Mat converted_;   ///< crop in the model's colour mode
-    cv::Mat model_input_; ///< header over the session input tensor, written in place
+    cv::Mat model_input_; ///< uint8 model image: the session input itself, or float staging
+    cv::Mat float_input_; ///< header over a float32 session input; empty for a uint8 model
     cv::Mat scratch_;     ///< aspect-ratio-preserving resize target
 
     void preprocess(const cv::Mat& plate);

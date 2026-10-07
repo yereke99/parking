@@ -43,7 +43,8 @@ This one command builds, validates real TensorRT GPU inference, runs the full ma
 comparison table, and writes timestamped Markdown and JSON results under `benchmark_results/`.
 
 All research rows use the same shared native TensorRT FP16 detector. EasyOCR then performs OCR on
-CUDA; the legacy Fast Plate OCR recognizer uses the documented CPU ORT fallback. To launch the
+CUDA; Fast Plate OCR runs a float32-input copy of its model on TensorRT (FP32) and uses the
+documented CPU ORT fallback only if TensorRT refuses it. To launch the
 full project rather than the benchmark, run `make run` (or pass a camera with `RUN_ARGS`).
 
 No model is loaded once per OCR call. Four-camera runs create four C++ processing threads and

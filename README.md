@@ -62,9 +62,9 @@ and builds pinned Python 3.9.25 with one compiler job to stay inside 4 GB RAM. T
 runs directly on native TensorRT 8.2/CUDA in FP16 and caches its engine under
 `benchmark_results/trt_cache`; preflight performs a real inference and rejects a CPU fallback.
 Benchmark control runs on Python 3.9; the CUDA EasyOCR worker remains isolated on JetPack's
-Python 3.6 because NVIDIA's PyTorch wheel is ABI-specific. Fast Plate OCR uses pinned ONNX
-Runtime 1.11.1 on CPU while the shared detector remains on GPU; EasyOCR 1.6.2 uses the JetPack
-CUDA-enabled PyTorch build. Nomeroff 4.0.1 and
+Python 3.6 because NVIDIA's PyTorch wheel is ABI-specific. Fast Plate OCR runs on TensorRT too,
+from a float32-input copy of its model made at image build (pinned ONNX Runtime 1.11.1 on CPU
+remains its fallback); EasyOCR 1.6.2 uses the JetPack CUDA-enabled PyTorch build. Nomeroff 4.0.1 and
 PaddleOCR 3.7 are retained in the four-backend report as explicit `unavailable` rows: their
 upstream Python/PyTorch/Paddle requirements are incompatible with JetPack 4 and no compatible
 official aarch64 package exists. They are never replaced with a misleading differently named OCR.
