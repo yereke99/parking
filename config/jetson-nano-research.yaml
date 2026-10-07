@@ -34,7 +34,10 @@ ocr:
   region_mode: kz
   lines_count: 1
   fp16: true
-  startup_timeout_ms: 180000
+  # A cold CUDA EasyOCR start on the 4 GB Nano can take minutes. `make run` also caps the CUDA
+  # attempt (KZ_ANPR_OCR_ACCELERATOR_TIMEOUT_S in tools/jetson_docker.sh) and then loads the same
+  # model on CPU, so this must cover both.
+  startup_timeout_ms: 600000
   request_timeout_ms: 30000
   research_worker_script: tools/research_ocr_worker.py
   research_model_cache_dir: /opt/kz-anpr/models/research

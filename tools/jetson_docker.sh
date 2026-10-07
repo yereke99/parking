@@ -89,6 +89,9 @@ run_args=(
     -e NVIDIA_VISIBLE_DEVICES=all
     -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
     -e KZ_ANPR_ROOT=/workspace
+    # Skip cuDNN in the EasyOCR worker: its kernels cost several hundred MB of the memory the GPU
+    # shares with the TensorRT detector. See tools/research_ocr_worker.py.
+    -e KZ_ANPR_EASYOCR_CUDNN=0
     -v "$project_dir:/workspace:ro"
     -v "$project_dir/benchmark_results:/workspace/benchmark_results:rw"
     -v "$project_dir/models:/workspace/models:ro"
@@ -120,7 +123,11 @@ if [[ "$action" == "check" ]]; then
 fi
 
 if [[ "$action" == "run" ]]; then
-    exec "$docker_bin" "${run_args[@]}" -e "OCR_BACKEND=${PROJECT_OCR:-easyocr}" "$image" \
+    # The project must start even when CUDA OCR cannot: give the CUDA worker this long, then serve
+    # the same EasyOCR model on CPU and log the reason (research_ocr_ready fallback=...).
+    # Benchmarks stay strict so a CPU result is never reported as a CUDA row.
+    exec "$docker_bin" "${run_args[@]}" -e "OCR_BACKEND=${PROJECT_OCR:-easyocr}" \
+        -e "KZ_ANPR_OCR_ACCELERATOR_TIMEOUT_S=${OCR_CUDA_TIMEOUT_S:-240}" "$image" \
         /opt/kz-anpr/bin/kz_anpr \
         --config /workspace/config/jetson-nano-research.yaml \
         "$@"

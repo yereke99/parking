@@ -183,6 +183,16 @@ CUDA through NVIDIA PyTorch. `make run` selects EasyOCR by default, so both the 
 of the normal project path use the Nano GPU. `PROJECT_OCR=fast_plate_ocr make run` selects the
 explicit mixed GPU-detector/CPU-OCR fallback.
 
+A cold CUDA EasyOCR start shares the Nano's 4 GB with the TensorRT detector and can take minutes.
+The worker prints one `event=research_ocr_stage` line per stage (`import_torch`, `load_model`,
+`warmup`, `ready`) with `mem_available_mb`, so a slow start shows where it waits. On the Jetson it
+runs without cuDNN (`KZ_ANPR_EASYOCR_CUDNN=0`), whose kernels would cost several hundred MB more.
+`make run` gives the CUDA attempt 240 s in a child process; if it fails or is still loading, the
+child is killed and the same model is served on CPU. The run then logs
+`event=research_ocr_ready device=cpu fallback=<reason>` instead of stopping. Raise the limit with
+`OCR_CUDA_TIMEOUT_S=420 make run`; `ocr.startup_timeout_ms` (600 s) must exceed it plus the CPU
+load. Benchmarks never fall back, so a CPU result cannot appear as a CUDA row.
+
 ## Power mode
 
 The benchmark records state but never changes it. Set the same mode before every comparison if

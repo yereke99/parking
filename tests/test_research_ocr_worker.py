@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import unittest
@@ -51,6 +52,44 @@ class ResearchOcrWorkerTests(unittest.TestCase):
                 process.stdout.close()
                 assert process.stderr is not None
                 process.stderr.close()
+
+    def test_auto_device_falls_back_to_cpu_or_hands_over_accelerator(self) -> None:
+        # accelerator: (expected device, falls back, accelerator timeout in seconds)
+        cases = {
+            "ok": ("cuda", False, "30"),
+            "fail": ("cpu", True, "30"),
+            "hang": ("cpu", True, "1"),
+        }
+        for accelerator, (device, fell_back, timeout_s) in cases.items():
+            with self.subTest(accelerator=accelerator):
+                process = subprocess.Popen(
+                    [sys.executable, str(WORKER_PATH), "--serve", "--mock",
+                     "--engine", "easyocr", "--device", "auto",
+                     "--mock-accelerator", accelerator],
+                    cwd=ROOT,
+                    env={**os.environ, "KZ_ANPR_OCR_ACCELERATOR_TIMEOUT_S": timeout_s},
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                assert process.stdin is not None and process.stdout is not None
+                ready = process.stdout.readline().decode().rstrip("\n").split("\t")
+                self.assertEqual(ready[:4], ["READY", "easyocr", "test", device])
+                self.assertEqual(bool(ready[10]), fell_back, ready)
+                crop = np.full((24, 96, 3), 128, dtype=np.uint8)
+                process.stdin.write(f"OCR\t1\t24\t96\t3\t{crop.nbytes}\t0\n".encode())
+                process.stdin.write(crop.tobytes())
+                process.stdin.flush()
+                response = process.stdout.readline().decode().split("\t")
+                self.assertEqual(response[:3], ["RESULT", "1", "152JTA02"])
+                process.stdin.write(b"STOP\n")
+                process.stdin.flush()
+                self.assertEqual(process.stdout.readline().decode().strip(), "STOPPED")
+                self.assertEqual(process.wait(timeout=5), 0)
+                # The supervising parent must not keep the protocol pipe open.
+                self.assertEqual(process.stdout.read(), b"")
+                process.stdin.close()
+                process.stdout.close()
 
 
 if __name__ == "__main__":

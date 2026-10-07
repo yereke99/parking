@@ -66,7 +66,9 @@ release requested for this legacy deployment, not an unbounded `3.9` tag.
 See [Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md) for compatibility details and preflight
 checks.
 
-`make run` starts the full project with TensorRT detection and CUDA EasyOCR. Override the input
+`make run` starts the full project with TensorRT detection and CUDA EasyOCR. If the CUDA OCR worker
+fails or is not ready within 240 s, it continues with the same EasyOCR model on CPU and logs
+`fallback=<reason>` (see [Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md)). Override the input
 without editing configuration, for example:
 
 ```sh

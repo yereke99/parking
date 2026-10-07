@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: jetson-all docker-build jetson-check run project benchmark-1 benchmark-4 research
+.PHONY: jetson-all docker-build jetson-check check run project benchmark-1 benchmark-4 research
 
 # Complete reproducible Jetson workflow. The research target prints the comparison table and the
 # exact JSON/Markdown result paths when it finishes.
@@ -12,7 +12,7 @@ jetson-all:
 docker-build:
 	./tools/jetson_docker.sh build
 
-jetson-check:
+jetson-check check:
 	./tools/jetson_docker.sh check
 
 # Full ANPR project: native TensorRT detector + CUDA EasyOCR by default.
