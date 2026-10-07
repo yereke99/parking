@@ -64,8 +64,10 @@ ocr:
   max_attempts: 60
 
 quality:
-  min_plate_width_px: 60
-  min_plate_height_px: 18
+  # The project defaults. Below about 90x22 px a plate's characters are 6-8 px wide, too small to
+  # read reliably: a 66x20 crop of 152JTA02 was confirmed as 152JT02 with the looser 60x18.
+  min_plate_width_px: 90
+  min_plate_height_px: 22
   min_sharpness: 25.0
   min_brightness: 25.0
   max_brightness: 235.0
@@ -81,7 +83,8 @@ stop_detection:
 
 consensus:
   min_samples: 3
-  required_votes: 2
+  # Project default: three agreeing readings before a plate is confirmed.
+  required_votes: 3
   min_agreement: 0.50
   min_avg_confidence: 0.40
   min_final_confidence: 0.45
