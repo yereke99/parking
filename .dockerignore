@@ -5,6 +5,7 @@
 !config/
 !include/
 !models/plate_ocr_config.yaml
+!models/nomeroff/*.ckpt
 !requirements/jetson-nano.lock
 !requirements/jetson-nano-build.lock
 !requirements/jetson-nano-build-wheels.txt

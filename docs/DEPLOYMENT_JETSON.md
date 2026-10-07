@@ -207,6 +207,11 @@ stops, the detector's crops cut into the plate's KZ emblem, so many readings gai
 or misread the 02 region box, and the 60-attempt consensus can still end LOW_CONFIDENCE. The model
 does not read the Japanese demo plate in `car.mp4`, which is outside its training formats.
 
+nomeroff.net.ua often resets the download to the Nano; it resumes where it stopped, up to 40
+attempts. To skip it, copy the file to `models/nomeroff/anpr_ocr_kz_2022_11_14.ckpt` in the
+checkout before `make docker-build` (for example with `scp` from a machine that has it); a copy
+with the right SHA-256 is used instead of the download.
+
 `PROJECT_OCR=easyocr_onnx make run` uses EasyOCR. The image build exports EasyOCR's recognizer with its own
 PyTorch 1.10 (`tools/export_easyocr_onnx.py`) once per input width EasyOCR can use, 64 to 384 px,
 into `/opt/kz-anpr/models/easyocr-onnx`. The C++ backend picks the width EasyOCR would pad the

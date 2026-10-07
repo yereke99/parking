@@ -188,15 +188,20 @@ RUN /usr/bin/python3 /opt/kz-anpr/tools/convert_fast_plate_ocr.py \
 # for the default `nomeroff_onnx` backend. Nomeroff itself needs Python >= 3.9 and PyTorch >= 1.12,
 # so the small network is rebuilt and exported with this image's PyTorch 1.10 and then runs in the
 # C++ process on TensorRT. The checkpoint is only needed for the export.
+# nomeroff.net.ua resets long transfers to the Nano, so the download resumes where it stopped.
+# A copy placed at models/nomeroff/anpr_ocr_kz_2022_11_14.ckpt in the checkout is used instead when
+# its SHA-256 matches (the script is listed too, so the wildcard may match nothing).
 ARG NOMEROFF_KZ_SHA256=b8d09e77dc0d212cf4a9f266e2ba2b18bd655dfcb45582195d64d647ca37ac28
+COPY tools/docker/fetch-resumable.sh models/nomeroff/*.ckpt /tmp/nomeroff/
 COPY tools/export_nomeroff_onnx.py /opt/kz-anpr/tools/
-RUN fetch-verified \
+RUN sh /tmp/nomeroff/fetch-resumable.sh \
         https://nomeroff.net.ua/models/ocr/kz/torch/model_v3.3/anpr_ocr_kz_2022_11_14.ckpt \
         "${NOMEROFF_KZ_SHA256}" /tmp/anpr_ocr_kz_2022_11_14.ckpt \
+        /tmp/nomeroff/anpr_ocr_kz_2022_11_14.ckpt \
     && /usr/bin/python3 /opt/kz-anpr/tools/export_nomeroff_onnx.py \
         --checkpoint /tmp/anpr_ocr_kz_2022_11_14.ckpt \
         --output /opt/kz-anpr/models/nomeroff-onnx/kz.onnx \
-    && rm /tmp/anpr_ocr_kz_2022_11_14.ckpt
+    && rm -rf /tmp/anpr_ocr_kz_2022_11_14.ckpt /tmp/nomeroff
 
 COPY --from=builder /opt/onnxruntime/lib/ /opt/onnxruntime/lib/
 COPY --from=builder /opt/python3.9/ /opt/python3.9/
