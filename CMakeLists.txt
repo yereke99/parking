@@ -8,6 +8,7 @@ option(KZ_ANPR_BUILD_RUNTIME "Build the OpenCV-based ANPR runtime" ON)
 option(KZ_ANPR_BUILD_TESTS "Build deterministic unit tests" ON)
 option(KZ_ANPR_WITH_ONNXRUNTIME "Enable the ONNX Runtime inference backend" ON)
 option(KZ_ANPR_WITH_TENSORRT "Enable the native TensorRT inference backend when available" ON)
+option(KZ_ANPR_WITH_GSTREAMER "Drive GStreamer directly for camera capture when its development files are available" ON)
 option(KZ_ANPR_REQUIRE_TENSORRT "Fail configuration when native TensorRT is unavailable" OFF)
 option(KZ_ANPR_SANITIZERS "Enable address and undefined-behaviour sanitizers" OFF)
 
@@ -46,9 +47,36 @@ endfunction()
 # ---------------------------------------------------------------------------
 add_library(kz_anpr_core
     src/common/config.cpp
+    src/common/json.cpp
     src/common/logging.cpp
     src/common/metrics.cpp
+    src/common/priority_gate.cpp
     src/common/yaml.cpp
+    # Camera mode: network topology, Hikvision discovery, RTSP/ISAPI probes, registry, status.
+    # Plain POSIX sockets and procfs/sysfs, no OpenCV, so all of it is unit tested anywhere.
+    src/net/arp.cpp
+    src/net/crypto.cpp
+    src/net/http_auth.cpp
+    src/net/http_client.cpp
+    src/net/net_basics.cpp
+    src/net/network_topology.cpp
+    src/net/rtsp_client.cpp
+    src/net/sdp.cpp
+    src/net/socket.cpp
+    src/hikvision/isapi.cpp
+    src/hikvision/native_anpr.cpp
+    src/hikvision/onvif.cpp
+    src/hikvision/sadp.cpp
+    src/hikvision/xml_lite.cpp
+    src/cameras/camera_mode_config.cpp
+    src/cameras/camera_registry.cpp
+    src/cameras/diagnostics.cpp
+    src/cameras/discovery.cpp
+    src/cameras/gst_pipeline.cpp
+    src/cameras/reconnect_policy.cpp
+    src/cameras/rtsp_preflight.cpp
+    src/cameras/status_store.cpp
+    src/cameras/system_stats.cpp
     src/ocr/nomeroff_decoding.cpp
     src/pipeline/plate_consensus.cpp
     src/pipeline/recognition_event.cpp
@@ -59,6 +87,7 @@ add_library(kz_anpr_core
 )
 target_include_directories(kz_anpr_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(kz_anpr_core PUBLIC cxx_std_17)
+target_link_libraries(kz_anpr_core PUBLIC Threads::Threads)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     # JetPack 4.x ships GCC 7. std::filesystem lives in a separate compatibility library there.
     target_link_libraries(kz_anpr_core PUBLIC stdc++fs)
@@ -79,6 +108,10 @@ if(KZ_ANPR_BUILD_RUNTIME)
         set(KZ_ANPR_RUNTIME_SOURCES
             src/camera/camera_source.cpp
             src/camera/frame_pump.cpp
+            src/cameras/camera_commands.cpp
+            src/cameras/multi_camera_runner.cpp
+            src/cameras/rtsp_camera_source.cpp
+            src/cameras/stream_check.cpp
             src/detection/plate_detector.cpp
             src/inference/inference_session.cpp
             src/inference/opencv_dnn_session.cpp
@@ -148,6 +181,25 @@ if(KZ_ANPR_BUILD_RUNTIME)
             endif()
         endif()
 
+        # Camera mode drives GStreamer itself when it can: bounded reads (a silent camera becomes a
+        # timeout instead of a read() that blocks for minutes), the bus error text, and I420
+        # frames from the Jetson hardware converter. Without the development files camera mode
+        # uses OpenCV's VideoCapture for the same pipelines.
+        set(KZ_ANPR_GSTREAMER_FOUND OFF)
+        if(KZ_ANPR_WITH_GSTREAMER)
+            find_package(PkgConfig QUIET)
+            if(PKG_CONFIG_FOUND)
+                pkg_check_modules(KZ_GST QUIET gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
+                if(KZ_GST_FOUND)
+                    set(KZ_ANPR_GSTREAMER_FOUND ON)
+                    list(APPEND KZ_ANPR_RUNTIME_SOURCES src/cameras/gst_capture.cpp)
+                endif()
+            endif()
+            if(NOT KZ_ANPR_GSTREAMER_FOUND)
+                message(STATUS "GStreamer development files not found; camera capture uses OpenCV's VideoCapture.")
+            endif()
+        endif()
+
         add_library(kz_anpr_runtime ${KZ_ANPR_RUNTIME_SOURCES})
         target_include_directories(kz_anpr_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
         target_link_libraries(kz_anpr_runtime PUBLIC kz_anpr_core Threads::Threads ${OpenCV_LIBS})
@@ -172,6 +224,11 @@ if(KZ_ANPR_BUILD_RUNTIME)
                 target_include_directories(kz_anpr_runtime SYSTEM PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
                 target_link_libraries(kz_anpr_runtime PUBLIC ${ONNXRUNTIME_LIBRARY})
             endif()
+        endif()
+        if(KZ_ANPR_GSTREAMER_FOUND)
+            target_compile_definitions(kz_anpr_runtime PUBLIC KZ_ANPR_WITH_GSTREAMER=1)
+            target_include_directories(kz_anpr_runtime SYSTEM PRIVATE ${KZ_GST_INCLUDE_DIRS})
+            target_link_libraries(kz_anpr_runtime PUBLIC ${KZ_GST_LDFLAGS})
         endif()
         if(KZ_ANPR_TENSORRT_FOUND)
             target_compile_definitions(kz_anpr_runtime PUBLIC KZ_ANPR_WITH_TENSORRT=1)
@@ -200,10 +257,20 @@ if(KZ_ANPR_BUILD_TESTS)
 
     add_executable(kz_anpr_core_tests
         tests/test_main.cpp
+        tests/test_camera_config.cpp
+        tests/test_camera_discovery.cpp
         tests/test_config.cpp
         tests/test_consensus.cpp
+        tests/test_hikvision.cpp
+        tests/test_http_rtsp.cpp
+        tests/test_ipv4.cpp
+        tests/test_json.cpp
+        tests/test_net_basics.cpp
+        tests/test_network_topology.cpp
         tests/test_nomeroff_decoding.cpp
+        tests/test_priority_gate.cpp
         tests/test_recognition_event.cpp
+        tests/test_sdp.cpp
         tests/test_state_machine.cpp
         tests/test_tracking.cpp
         tests/test_validation.cpp
@@ -219,6 +286,10 @@ if(KZ_ANPR_BUILD_TESTS)
     if(TARGET kz_anpr_runtime)
         add_executable(kz_anpr_runtime_tests
             tests/test_main.cpp
+            tests/test_camera_commands.cpp
+            tests/test_frame_pump.cpp
+            tests/test_gst_capture.cpp
+            tests/test_multi_camera.cpp
             tests/test_nomeroff_onnx.cpp
             tests/test_quality.cpp
         )

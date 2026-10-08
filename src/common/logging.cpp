@@ -13,7 +13,50 @@ std::int64_t monotonicMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
 }
 
+thread_local std::string t_log_context;
+
 }  // namespace
+
+std::string quoteLogValue(const std::string& value) {
+    const bool needs_quotes =
+        value.empty() || std::any_of(value.begin(), value.end(), [](unsigned char ch) {
+            return std::isspace(ch) != 0 || ch == '"' || ch == '=' || ch == '\\';
+        });
+    if (!needs_quotes) {
+        return value;
+    }
+    std::string quoted;
+    quoted.reserve(value.size() + 2);
+    quoted.push_back('"');
+    for (const char ch : value) {
+        if (ch == '"' || ch == '\\') {
+            quoted.push_back('\\');
+            quoted.push_back(ch);
+        } else if (ch == '\n' || ch == '\r' || ch == '\t') {
+            quoted.push_back(' ');
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('"');
+    return quoted;
+}
+
+LogFields& LogFields::addQuoted(const char* key, const std::string& value) {
+    return add(key, quoteLogValue(value));
+}
+
+LogContext::LogContext(std::string fields) : previous_(t_log_context) {
+    t_log_context = std::move(fields);
+}
+
+LogContext::~LogContext() {
+    t_log_context = std::move(previous_);
+}
+
+const std::string& LogContext::current() {
+    return t_log_context;
+}
 
 std::string toString(LogLevel level) {
     switch (level) {
@@ -59,6 +102,9 @@ void Logger::log(LogLevel level, const std::string& event, const std::string& fi
     }
     std::ostringstream line;
     line << "ts_ms=" << monotonicMs() << " level=" << toString(level) << " event=" << event;
+    if (!t_log_context.empty()) {
+        line << ' ' << t_log_context;
+    }
     if (!fields.empty()) {
         line << ' ' << fields;
     }

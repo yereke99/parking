@@ -1,6 +1,7 @@
 #include "anpr/detection/plate_detector.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <stdexcept>
@@ -9,6 +10,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "anpr/common/logging.hpp"
+#include "anpr/common/priority_gate.hpp"
 
 namespace anpr {
 
@@ -206,7 +208,7 @@ public:
                             std::shared_ptr<PipelineMetrics> shared_metrics)
         : detector(std::move(shared_detector)), aggregate_metrics(std::move(shared_metrics)) {}
 
-    std::mutex mutex;
+    PriorityGate gate;
     std::unique_ptr<IPlateDetector> detector;
     std::shared_ptr<PipelineMetrics> aggregate_metrics;
 };
@@ -222,7 +224,7 @@ public:
     const std::vector<Detection>& detect(const cv::Mat& frame) override {
         const auto started = std::chrono::steady_clock::now();
         {
-            const std::lock_guard<std::mutex> guard(core_->mutex);
+            const PriorityGate::Scoped turn(core_->gate, priority_.load());
             detections_ = core_->detector->detect(frame);
         }
         if (metrics_ != nullptr) {
@@ -239,8 +241,11 @@ public:
         return "shared:" + core_->detector->backendName();
     }
 
+    void setSchedulingPriority(int priority) override { priority_.store(priority); }
+
 private:
     std::shared_ptr<SharedPlateDetectorCore> core_;
+    std::atomic<int> priority_{0};
     PipelineMetrics* metrics_;
     std::vector<Detection> detections_;
 };
@@ -256,6 +261,15 @@ std::shared_ptr<SharedPlateDetectorCore> makeSharedPlateDetector(
     }
     return std::make_shared<SharedPlateDetectorCore>(std::move(implementation),
                                                       std::move(aggregate_metrics));
+}
+
+std::shared_ptr<SharedPlateDetectorCore> makeSharedPlateDetector(
+    std::unique_ptr<IPlateDetector> detector) {
+    if (detector == nullptr) {
+        return nullptr;
+    }
+    return std::make_shared<SharedPlateDetectorCore>(std::move(detector),
+                                                      std::make_shared<PipelineMetrics>());
 }
 
 std::unique_ptr<IPlateDetector> makeSharedPlateDetectorClient(

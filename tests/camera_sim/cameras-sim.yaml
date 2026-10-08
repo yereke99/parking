@@ -1,0 +1,13 @@
+# Camera-mode config for the SIMULATED camera LAN (tests/camera_sim, sim.sh run). Development only.
+# Inside the simulator container the camera LAN is a Docker veth (no sysfs hardware link), so the
+# interface is named instead of auto-detected; cam3 serves RTSP on 8554.
+network:
+  interface: eth0
+  # The simulator has no GSM modem; the probe would only report the Docker uplink.
+  internet_check: false
+discovery:
+  manual_hosts: ["192.168.77.23:8554"]
+  listen_ms: 2000
+runtime:
+  status_interval_ms: 2000
+  metrics_interval_ms: 20000

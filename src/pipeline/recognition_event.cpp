@@ -142,7 +142,11 @@ std::string toJson(const PlateRecognitionEvent& event) {
 }
 
 void JsonStdoutSink::onRecognition(const PlateRecognitionEvent& event) {
-    std::cout << toJson(event) << '\n';
+    onRawEvent(toJson(event));
+}
+
+void JsonStdoutSink::onRawEvent(const std::string& json_line) {
+    std::cout << json_line << '\n';
     std::cout.flush();
 }
 
@@ -150,7 +154,15 @@ JsonLinesFileSink::JsonLinesFileSink(const std::string& path)
     : path_(path), out_(path, std::ios::app) {}
 
 void JsonLinesFileSink::onRecognition(const PlateRecognitionEvent& event) {
-    out_ << toJson(event) << '\n';
+    writeLine(toJson(event));
+}
+
+void JsonLinesFileSink::onRawEvent(const std::string& json_line) {
+    writeLine(json_line);
+}
+
+void JsonLinesFileSink::writeLine(const std::string& line) {
+    out_ << line << '\n';
     out_.flush();
     if (!out_) {
         logEvent(LogLevel::kError, "events_file_write_failed", LogFields().add("path", path_));
@@ -163,6 +175,28 @@ void FanOutSink::onRecognition(const PlateRecognitionEvent& event) {
         if (sink) {
             sink->onRecognition(event);
         }
+    }
+}
+
+void FanOutSink::onRawEvent(const std::string& json_line) {
+    for (const auto& sink : sinks_) {
+        if (sink) {
+            sink->onRawEvent(json_line);
+        }
+    }
+}
+
+void SynchronizedSink::onRecognition(const PlateRecognitionEvent& event) {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    if (inner_) {
+        inner_->onRecognition(event);
+    }
+}
+
+void SynchronizedSink::onRawEvent(const std::string& json_line) {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    if (inner_) {
+        inner_->onRawEvent(json_line);
     }
 }
 

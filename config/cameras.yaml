@@ -1,0 +1,138 @@
+# Camera mode: `make run-cameras` (kz_anpr --cameras) finds the Hikvision cameras on the PoE switch
+# by itself and runs ANPR on each of them. `make camera-scan` lists what it finds without logging
+# in, `make camera-check` also tests RTSP, credentials, the decoder and frames for each camera,
+# and `make camera-status` prints the status of a running instance.
+#
+# The PoE switch has no DHCP server: the Jetson needs a static address in the cameras' subnet on
+# its Ethernet port (`make camera-lan-setup ADDRESS=192.168.10.5/24`). Internet comes from the GSM
+# modem; nothing here changes routes, and camera traffic never leaves the camera LAN.
+#
+# No secrets in this file. Camera passwords live in config/cameras.env (copy
+# config/cameras.env.example, gitignored, chmod 600): HIKVISION_USERNAME / HIKVISION_PASSWORD for
+# every camera, HIKVISION_USERNAME_CAMERA_02 / HIKVISION_PASSWORD_CAMERA_02 for one camera.
+#
+# Recognition settings (ROIs, thresholds, models) still come from the ANPR profile
+# (config/jetson-nano.yaml), shared by all cameras unless a camera below names its own.
+
+network:
+  # Ethernet interface wired to the PoE switch, or auto (the wired interface with link and an
+  # IPv4 address; never the modem, Docker bridges or the USB gadget).
+  interface: auto
+  # Report whether the GSM uplink works. Informational: cameras never depend on it.
+  internet_check: true
+  internet_probe_targets: ["1.1.1.1:53", "8.8.8.8:53"]
+  internet_timeout_ms: 1500
+
+discovery:
+  # false: only manual_hosts and the cameras listed below with an ip are used.
+  enabled: true
+  # Hikvision SADP (UDP 37020): finds cameras even in another subnet or not yet activated.
+  sadp: true
+  # ONVIF WS-Discovery (UDP 3702). Hikvision ships with ONVIF disabled; RTSP does not need it.
+  onvif: true
+  # Read the kernel ARP table for devices that already talked to the Jetson.
+  arp_table: true
+  # TCP sweep of the camera subnet: auto (only when SADP and ONVIF found nothing, or fewer
+  # cameras than the registry remembers), always or never.
+  subnet_scan: auto
+  # Subnets with more hosts than this are not swept (a /22 has 1022).
+  scan_max_hosts: 1024
+  # RTSP, HTTP and the Hikvision SDK port.
+  scan_ports: [554, 80, 8000]
+  # How long SADP and ONVIF wait for answers.
+  listen_ms: 2500
+  connect_timeout_ms: 400
+  # Always probed, discovered or not: "192.168.10.21" or "192.168.10.21:8554" (RTSP port).
+  manual_hosts: []
+  # More cameras than this are listed but ignored.
+  max_cameras: 16
+  # Generated stable ids (camera-01, camera-02, ...) by MAC / serial. No secrets; ids may be
+  # renamed there.
+  registry_file: var/cameras/registry.yaml
+  # Report two devices answering for one IP (factory-reset cameras all start at 192.168.1.64).
+  duplicate_ip_check: true
+  # While running, look for cameras that appeared later (0 disables).
+  rescan_interval_ms: 300000
+
+rtsp:
+  port: 554
+  # main (full resolution, best for plates) or sub (lower resolution, less CPU/GPU).
+  stream: main
+  main_path: /Streaming/Channels/101
+  sub_path: /Streaming/Channels/102
+  # Names of the environment variables holding the login, not the login itself.
+  username_env: HIKVISION_USERNAME
+  password_env: HIKVISION_PASSWORD
+  timeout_ms: 4000
+  # rtspsrc jitter-buffer latency.
+  latency_ms: 200
+
+decode:
+  # auto (NVIDIA nvv4l2decoder when the container can use it, else software),
+  # nvidia_hardware (hardware only) or software.
+  decoder: auto
+  # Hardware down-scaling of wider streams before colour conversion (0 keeps the size).
+  max_width: 0
+  # Frame rate cap before colour conversion (0 keeps the camera's rate).
+  max_fps: 0
+
+capture:
+  # Latest-frames queue between capture and processing; the oldest frame is dropped (1..8).
+  queue_size: 1
+  first_frame_timeout_ms: 10000
+  read_timeout_ms: 5000
+  # A frame older than this when processing picks it up is discarded as stale.
+  max_frame_age_ms: 1500
+  # Network blips and camera reboots: 1 s, 2 s, 4 s ... up to 30 s, forever.
+  reconnect_initial_backoff_ms: 1000
+  reconnect_max_backoff_ms: 30000
+  # A rejected password is retried only every 15 minutes and at most twice more: Hikvision locks
+  # an address out for 30 minutes after a few failed logins.
+  auth_retry_interval_ms: 900000
+  auth_max_retries: 2
+  # Wrong stream path, unsupported codec, inactive camera: someone has to fix the camera.
+  configuration_retry_interval_ms: 120000
+  # How long camera-check reads frames from each camera.
+  check_duration_ms: 3000
+
+runtime:
+  # Cameras beyond this are reported (CAMERA_LIMIT_REACHED) but not processed.
+  max_active_cameras: 4
+  # Read by `make camera-status`.
+  status_file: var/cameras/status.json
+  status_interval_ms: 5000
+  # Per-camera and system summary log lines.
+  metrics_interval_ms: 60000
+  # Below this much available RAM the run logs OUT_OF_MEMORY_RISK.
+  min_available_ram_mb: 300
+
+onvif:
+  # ONVIF users are separate accounts on Hikvision. Device details are read over ONVIF only when
+  # these variables are set; discovery itself never logs in.
+  username_env: ONVIF_USERNAME
+  password_env: ONVIF_PASSWORD
+
+native_anpr:
+  # Also report the camera's own plate reads (ISAPI alertStream) as `hikvision_anpr` events.
+  enabled: false
+
+# Per-camera settings, matched by id (from var/cameras/registry.yaml), then mac, serial or ip.
+# Every key except the match key is optional; unset keys use the settings above.
+cameras: []
+# cameras:
+#   - id: camera-01
+#     mac: "44:19:b6:01:02:03"
+#     stream: sub
+#   - ip: 192.168.10.22
+#     enabled: false
+#   - serial: DS-TCG406-E20250101AAWRK12345678
+#     rtsp_port: 8554
+#     rtsp_path: /Streaming/Channels/101
+#     http_port: 80
+#     # This camera's login: the variables named here instead of HIKVISION_USERNAME/PASSWORD.
+#     username_env: GATE_EXIT_USERNAME
+#     password_env: GATE_EXIT_PASSWORD
+#     decoder: software
+#     # Own ROIs and thresholds; models and inference settings stay shared.
+#     anpr_config: config/gate-exit.yaml
+#     native_anpr: true

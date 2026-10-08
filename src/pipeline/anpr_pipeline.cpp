@@ -32,6 +32,25 @@ cv::Rect toRect(const BoundingBox& box) {
     return cv::Rect(box.x, box.y, box.width, box.height);
 }
 
+/// Turn order on a detector shared by several cameras: a plate being read first, then a vehicle
+/// at the barrier, then one approaching; empty lanes take the turns nobody else wants.
+int schedulingPriority(VehicleState state) {
+    switch (state) {
+        case VehicleState::kRecognizing:
+            return 3;
+        case VehicleState::kNear:
+        case VehicleState::kStopped:
+            return 2;
+        case VehicleState::kApproaching:
+            return 1;
+        case VehicleState::kIdle:
+        case VehicleState::kConfirmed:
+        case VehicleState::kCooldown:
+            return 0;
+    }
+    return 0;
+}
+
 }  // namespace
 
 AnprPipeline::AnprPipeline(AnprConfig config, PlateSink& sink)
@@ -513,6 +532,7 @@ void AnprPipeline::processFrame(const Frame& frame) {
     const VehicleState state_before = state_machine_.state();
     const bool ran_detector = shouldRunDetector(state_before, now_ms, motion);
     if (ran_detector) {
+        detector_->setSchedulingPriority(schedulingPriority(state_before));
         runDetector(frame.image, now_ms);
     } else {
         mapped_detections_.clear();

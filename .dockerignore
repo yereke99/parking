@@ -8,6 +8,10 @@
 !src/
 !tests/
 !tools/
+# Camera passwords never enter the build context, although config/ is allowed above.
+config/**/*.env
+**/*.env
 **/__pycache__
 **/*.pyc
 **/.DS_Store
+tests/camera_sim/.cache

@@ -3,6 +3,10 @@
 Software cannot recover a plate that was never captured clearly. Treat the camera as part of the
 ANPR system.
 
+This page covers image quality, mounting and calibration, which apply to every camera. For
+Hikvision cameras on the PoE switch (addresses, discovery, logins, streams, decoding), see
+[Hikvision cameras](CAMERAS.md).
+
 ## Image quality
 
 - Plate width at the stop line: at least 120 px, 160 px or more preferred. Crops smaller than
@@ -12,8 +16,9 @@ ANPR system.
 - Exposure: manual or limited auto exposure, so headlights do not blow out the plate. Enable WDR if
   there is strong backlight.
 - Do not starve the stream of bitrate; compression smears the characters first.
-- 15-25 FPS is plenty. Pick the smallest resolution that keeps the plate at 120 px: it is decoded
-  on the Nano's CPU.
+- 15-25 FPS is plenty. Pick the smallest resolution that keeps the plate at 120 px: a single
+  `make camera` stream is decoded on the Nano's CPU, and in camera mode four cameras share one
+  hardware decoder ([decoding](CAMERAS.md#decoding)).
 
 ## Mounting
 
@@ -28,7 +33,9 @@ ANPR system.
 ## Calibration
 
 All ROIs are `[x, y, width, height]` fractions of the frame, set in `config/jetson-nano.yaml`
-(copy the keys from `config/default.yaml`, where every one is documented).
+(copy the keys from `config/default.yaml`, where every one is documented). In camera mode that
+profile applies to every camera; a camera framed differently gets its own copy, named by
+`anpr_config` in its entry of `config/cameras.yaml`.
 
 | Key | What it does |
 | --- | --- |

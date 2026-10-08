@@ -43,13 +43,43 @@ make service CAMERA='rtsp://user:password@192.168.1.64:554/Streaming/Channels/10
 `make bench` prints FPS and per-stage latency on the test clip. `make shell` opens a shell in the
 image.
 
-## Replay all five videos
+## Hikvision cameras
 
-`tools/video-list.txt` lists `parking.mp4` and `IMG_5666.mp4` through `IMG_5669.mp4`. On the
-Jetson, run `make run-videos`: it waits for each clip to finish before starting the next, using
-the same Docker image, models and recognition settings as `make run`. The clips are mounted from
-the checkout at `/workspace/video`; they are not copied into the image. All five original clips
-are tracked in Git, so `git pull` brings the videos along with the code. No image rebuild is needed.
+Camera mode finds every Hikvision camera on the PoE switch by itself, checks each one and runs the
+ANPR on all of them in one process, with one shared detector and OCR; every event carries the
+camera's id. A camera that is down or misconfigured is reported with a diagnostic code and an
+action, and retried; the others keep working. The camera login goes into `config/cameras.env`
+(copy `config/cameras.env.example`), never into `config/cameras.yaml`.
+
+```sh
+make camera-lan-setup ADDRESS=192.168.10.5/24  # once: static address on the camera LAN (dry run;
+                                               # add LAN_ARGS=--apply)
+make camera-scan     # camera LAN, Internet uplink, every camera found; sends no password
+make camera-check    # per camera: login, stream, decoder, frames; READY or the reason why not
+make run-cameras     # all cameras in the foreground; events also go to var/events.jsonl
+make camera-service  # the same as the boot service (replaces a single-camera `make service`)
+make camera-status   # status table of the running service
+```
+
+The guide, with the diagnostic codes, network edge cases and troubleshooting:
+[Hikvision cameras](docs/CAMERAS.md).
+
+## Replay every video in video/
+
+`make run-videos` (or its old name, `make run-all`) replays every video file it finds in `video/`,
+one after another, however many there are: add a clip to the folder and the next run includes
+it; remove one and it is skipped. Today that is `parking.mp4` and `IMG_5666.mp4` through
+`IMG_5669.mp4`. It waits for each clip to finish before starting the next, using the same Docker
+image, models and recognition settings as `make run`. The clips are mounted from the checkout at
+`/workspace/video`; they are not copied into the image. The original clips are tracked in Git, so
+`git pull` brings the videos along with the code. No image rebuild is needed.
+
+```sh
+make list-videos                                   # what run-videos would replay
+make run-videos                                    # every clip in video/
+make run-videos VIDEOS='IMG_5667.mp4 IMG_5669.mp4' # only these clips
+make run VIDEO=video/IMG_5667.mp4                  # one clip, events on the terminal
+```
 
 Each run creates a new directory under `var/video-runs/` with events and a log for each clip,
 plus `summary.json`. The terminal prints each clip's confirmed plate list and `RECOGNIZED`,
@@ -72,22 +102,24 @@ make run-videos VIDEO_ARGS='--input-dir video/compatible'
 
 Preparation applies the rotation and encodes H.264, 8-bit `yuv420p`, retaining the HLG/BT.2020
 color tags. It does not tone-map HDR or alter the recognition pipeline's brightness handling.
-Keeping 4K retains the plate crop sizes used by the current quality gates. It also
-copies the original `parking.mp4` into the same directory. No FFmpeg runs during recognition.
+Keeping 4K retains the plate crop sizes used by the current quality gates. Every clip in `video/`
+is handled: clips that are already 8-bit H.264 (such as `parking.mp4`) are copied unchanged. No
+FFmpeg runs during recognition.
 
 For the existing native development build, with the Nomeroff KZ ONNX model present:
 
 ```sh
 make run-videos VIDEO_ARGS='--native'
 make run-videos VIDEO_ARGS='--native --input-dir video/compatible'
-# Custom list/config/new output directory:
+# A fixed clip list, a config or an output directory of your own:
 python3 tools/run_videos.py --help
 ```
 
 ## Output
 
-Each vehicle produces one JSON line on stdout. `make camera` and the service also append it to
-`var/events.jsonl` (`--events-file PATH`), which another program can follow with `tail -F`:
+Each vehicle produces one JSON line on stdout. `make camera`, `make run-cameras` and the service
+also append it to `var/events.jsonl` (`--events-file PATH`), which another program can follow with
+`tail -F`:
 
 ```json
 {"event":"plate_recognition","status":"VALID_HIGH_CONFIDENCE","normalized_plate":"152JTA02","raw_plate":"152JTA02","confidence":0.8309,"timestamp_ms":8533,"time":"2026-10-08T07:12:03.120Z","camera_id":"gate-01","plate_box":{"x":414,"y":340,"width":143,"height":49},"region_code":"02","region_name":"Almaty","format":"current_individual","recognition_latency_ms":4267,"observation_count":30,"agreeing_observations":3,"best_crop_path":null}
@@ -100,8 +132,8 @@ Open the barrier only for `VALID_HIGH_CONFIDENCE` or `VALID_LOW_CONFIDENCE`. The
 
 Structured logs go to stderr as `key=value` lines. Credentials in camera URLs are masked.
 
-Exit codes: 0 success, 1 unexpected error, 2 configuration error, 3 camera unavailable, 4 model
-or backend unavailable.
+Exit codes: 0 success, 1 unexpected error, 2 configuration error, 3 camera or camera LAN
+unavailable, 4 model or backend unavailable.
 
 ## Wiring up a barrier
 
@@ -129,6 +161,7 @@ Without writing C++, a separate process can follow `var/events.jsonl` instead.
 | --- | --- |
 | `config/jetson-nano.yaml` | production: TensorRT, the thresholds validated on the Nano |
 | `config/default.yaml` | development machine: ONNX Runtime on the CPU, the same recognition thresholds, every key documented |
+| `config/cameras.yaml` | camera mode: camera LAN, discovery, streams, decoding, reconnects; no secrets |
 
 Every operational threshold lives in the YAML, nothing important is a constant in the source, and
 an unknown key is reported at startup. Before going live, re-check the ROIs and the stop window
@@ -169,6 +202,7 @@ own tracking and state.
 ## Documentation
 
 - [Jetson Nano deployment](docs/DEPLOYMENT_JETSON.md)
+- [Hikvision cameras: camera mode](docs/CAMERAS.md)
 - [Camera setup](docs/CAMERA_SETUP.md)
 - [OCR: Nomeroff Net's Kazakhstan model](docs/OCR.md)
 - [Kazakhstan plate formats](docs/KAZAKHSTAN_PLATES.md)

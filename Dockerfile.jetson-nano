@@ -19,10 +19,18 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG ONNXRUNTIME_VERSION=1.11.1
 ARG ONNXRUNTIME_SHA256=bb9ca658a6a0acc7b9e4288647277a9ce9d86b063a2403a51d5c0d2e4df43603
 
+# The GStreamer headers let camera mode drive its appsink directly (bounded reads, the bus error
+# text, I420 frames from the hardware converter) instead of through OpenCV. They are Ubuntu
+# 18.04's own 1.14.5 packages: the version of the GStreamer runtime this image already has from
+# l4t-base, and the one NVIDIA built nvv4l2decoder and nvvidconv against. The runtime stage
+# needs nothing new. pkg-config fails the build here rather than letting CMake quietly fall back
+# to OpenCV capture.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         build-essential ca-certificates cmake curl pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+        libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && pkg-config --exists 'gstreamer-1.0 >= 1.14' 'gstreamer-app-1.0' 'gstreamer-video-1.0'
 
 COPY tools/docker/fetch-verified.sh /usr/local/bin/fetch-verified
 
@@ -61,8 +69,12 @@ FROM ${L4T_ML_IMAGE} AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 ARG NOMEROFF_KZ_SHA256=b8d09e77dc0d212cf4a9f266e2ba2b18bd655dfcb45582195d64d647ca37ac28
 
+# The GStreamer core and base libraries (app/video) come with l4t-base already; naming them
+# makes the binary's dependency explicit, and the ldd check below fails the build instead of
+# shipping a kz_anpr that cannot start.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates curl libgomp1 \
+        libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Nomeroff Net 4.0.1's Kazakhstan text reader ("kz", model card nomeroff-net-ocr-kz/model-4.json).
@@ -85,6 +97,10 @@ RUN sh /tmp/nomeroff/fetch-resumable.sh \
 COPY --from=builder /opt/onnxruntime/lib/ /opt/onnxruntime/lib/
 COPY --from=builder /tmp/build/kz_anpr /opt/kz-anpr/bin/kz_anpr
 COPY --from=builder /tmp/build/kz_anpr_benchmark /opt/kz-anpr/bin/kz_anpr_benchmark
+RUN if LD_LIBRARY_PATH=/opt/onnxruntime/lib:${LD_LIBRARY_PATH} ldd /opt/kz-anpr/bin/kz_anpr \
+        | grep 'not found'; then \
+        echo "kz_anpr has unresolved shared libraries (above)" >&2; exit 1; \
+    fi
 
 ENV LD_LIBRARY_PATH=/opt/onnxruntime/lib:${LD_LIBRARY_PATH} \
     OMP_NUM_THREADS=1 \
@@ -92,7 +108,7 @@ ENV LD_LIBRARY_PATH=/opt/onnxruntime/lib:${LD_LIBRARY_PATH} \
     MKL_NUM_THREADS=1
 
 # tools/jetson_docker.sh refuses to run an image built from an older checkout layout.
-LABEL kz-anpr.layout="production-1"
+LABEL kz-anpr.layout="cameras-1"
 
 WORKDIR /workspace
 CMD ["/opt/kz-anpr/bin/kz_anpr", "--config", "/workspace/config/jetson-nano.yaml"]

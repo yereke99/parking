@@ -45,10 +45,35 @@ public:
         return *this;
     }
 
+    /// Adds `key="value"` when the value is empty or contains spaces, quotes or `=`, so free text
+    /// such as an operator action stays one field for log parsers. Plain tokens stay unquoted.
+    LogFields& addQuoted(const char* key, const std::string& value);
+
     [[nodiscard]] std::string str() const { return stream_.str(); }
 
 private:
     std::ostringstream stream_;
+};
+
+/// `value` as one log field value: quoted and escaped when it is empty or contains whitespace,
+/// quotes or `=`, unchanged otherwise.
+std::string quoteLogValue(const std::string& value);
+
+/// Fields prepended to every log line written by the current thread while this object lives, for
+/// example `camera_id=camera-02` in that camera's capture and processing threads. Nesting
+/// restores the previous context. A thread without a context logs exactly as before.
+class LogContext {
+public:
+    explicit LogContext(std::string fields);
+    ~LogContext();
+    LogContext(const LogContext&) = delete;
+    LogContext& operator=(const LogContext&) = delete;
+
+    /// The current thread's context, empty when none is set.
+    static const std::string& current();
+
+private:
+    std::string previous_;
 };
 
 void logEvent(LogLevel level, const std::string& event, const LogFields& fields);

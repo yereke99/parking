@@ -22,6 +22,9 @@ public:
     /// call, so no vector is allocated per frame.
     virtual const std::vector<Detection>& detect(const cv::Mat& frame) = 0;
     [[nodiscard]] virtual std::string backendName() const = 0;
+    /// How urgently the next detect calls need the shared model: higher goes first when several
+    /// cameras wait for one detector (see PriorityGate). A detector of its own ignores it.
+    virtual void setSchedulingPriority(int priority) { (void)priority; }
 };
 
 /// YOLOv8-style single-class plate detector.
@@ -74,10 +77,14 @@ std::unique_ptr<IPlateDetector> makePlateDetector(const DetectorConfig& detector
 
 class SharedPlateDetectorCore;
 
-/// Loads one detector model for a group of streams. Each client serializes access to the
-/// non-thread-safe inference session while retaining per-stream total latency/counters.
+/// Loads one detector model for a group of streams. Clients take turns on the non-thread-safe
+/// inference session through a PriorityGate (a camera recognising a plate before idle ones)
+/// while retaining per-stream total latency/counters.
 std::shared_ptr<SharedPlateDetectorCore> makeSharedPlateDetector(
     const DetectorConfig& detector, const InferenceConfig& inference, std::string& error);
+/// Wraps an already built detector (tests, or a caller that loaded it itself).
+std::shared_ptr<SharedPlateDetectorCore> makeSharedPlateDetector(
+    std::unique_ptr<IPlateDetector> detector);
 std::unique_ptr<IPlateDetector> makeSharedPlateDetectorClient(
     const std::shared_ptr<SharedPlateDetectorCore>& core, PipelineMetrics* metrics);
 

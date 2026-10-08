@@ -34,24 +34,70 @@ CameraSource (file | USB | RTSP | GStreamer)
   -> PlateSink              PlateRecognitionEvent: JSON on stdout and in the events file
 ```
 
+Camera mode (`kz_anpr --cameras`, [Hikvision cameras](CAMERAS.md)) puts the same pipeline behind
+camera discovery and runs it once per camera:
+
+```text
+NetworkSnapshot             sysfs, /proc/net/route: camera LAN, GSM uplink; never changes a route
+  -> discovery              SADP, ONVIF WS-Discovery, ARP table, manual and registry hosts,
+                            subnet scan when needed; never sends credentials
+  -> CameraRegistry         stable ids: MAC > serial > device ID > ONVIF UUID > IP
+  -> RTSP preflight         one DESCRIBE with credentials per camera; a 401 is final
+  -> decoder plan           nvv4l2decoder through a native GStreamer appsink, CPU fallback
+  -> per camera             capture thread -> processing thread (AnprPipeline as above)
+  -> shared models          one TensorRT detector, one Nomeroff OCR, calls serialized
+  -> SynchronizedSink       events tagged with camera_id; var/cameras/status.json every 5 s
+```
+
+The network, discovery, RTSP, ISAPI, registry and status code (`src/net`, `src/hikvision`,
+`src/cameras` except capture and the runner) uses plain POSIX sockets and procfs/sysfs, no
+OpenCV, so all of it is unit tested on any machine.
+
 ## Threading and multiple streams
 
-Each source owns one capture thread and one latest-frame slot. A single coordinator visits the
-streams round-robin and runs their independent state machines. The detector and OCR sessions are
-shared; tracking, stop detection, consensus and event identity remain per camera.
+**One source** (`make run`, `make camera`, `--source`): one capture thread and one processing
+thread.
 
 **Capture thread.** Owns the camera handle, reads frames, publishes into a one-slot buffer that
 overwrites. It also owns reconnection with exponential backoff. It never waits for inference,
 because an RTSP stream that is not drained backs up in the driver and everything the pipeline
-later sees is stale.
+later sees is stale. A video file is the exception: there the capture thread waits for the slot
+to be collected, so every frame of the clip is processed in order.
 
-**Processing thread.** Everything else, in order. Shared detector and OCR access is serialized,
-which bounds CUDA memory and is the safe reference path for the 4 GB target. If a later batch
-benchmark proves beneficial, the OCR abstraction already exposes batch recognition.
+**Processing thread.** Everything else, in order: motion, detection, tracking, the state machine,
+OCR and the vote.
 
 A frame that the processing thread did not collect before the next one arrived is dropped and
 counted. At a barrier the newest view of the vehicle is what matters; the one from 400 ms ago is
 worth nothing. There is no queue that can grow.
+
+**Several cameras** (camera mode, or several `--source` options) run in one process,
+`MultiCameraRunner`, with one capture thread and one processing thread per camera:
+
+```text
+camera-01  capture thread -> latest-frames queue -> processing thread --+
+camera-02  capture thread -> latest-frames queue -> processing thread --+--> shared detector (mutex)
+camera-03  capture thread -> latest-frames queue -> processing thread --+--> shared OCR (mutex)
+                                                                         \--> SynchronizedSink
+```
+
+- The capture thread of a camera drives its GStreamer pipeline (`GstCapture`: reads with a
+  timeout, the bus error text, I420 frames from the hardware converter), keeps a bounded queue of
+  the newest frames (`capture.queue_size`, the oldest is dropped and counted) and owns reconnection
+  through `ReconnectPolicy`: exponential backoff for network failures, one attempt every 15
+  minutes and at most two retries for a rejected password, because Hikvision locks an address out
+  after a few failed logins.
+- The processing thread of a camera owns that camera's `AnprPipeline`: motion, tracking, stop
+  detection, the state machine, consensus and event identity are per camera and share nothing.
+  Frames older than `capture.max_frame_age_ms` at pick-up are dropped as stale; I420 frames are
+  converted to BGR only here, so dropped frames cost no conversion.
+- The detector and the OCR exist once. Each is one TensorRT engine whose calls are serialized by
+  a mutex, which bounds CUDA memory on the 4 GB board; the threads take turns, so a slow or dead
+  camera never blocks the others. If a later batch benchmark proves beneficial, the OCR
+  abstraction already exposes batch recognition.
+- Events from all cameras go through `SynchronizedSink`, so JSON lines never interleave. The
+  runner writes `var/cameras/status.json`, logs per-camera and system summaries, watches the
+  available RAM, and adds cameras that appear later through periodic rediscovery.
 
 ## Inference backends
 
@@ -196,7 +242,9 @@ file, a monotonic clock for a camera.
 Nothing recoverable is fatal. Camera loss, a read timeout, a bad crop, a malformed model output,
 an inference failure and an invalid bounding box are all handled in place and logged. Only
 startup problems exit: configuration errors return 2, an unavailable camera 3, a model or backend
-failure 4.
+failure 4. In camera mode a failing camera is never fatal to the others: each problem is logged
+once with a stable code (`error=RTSP_AUTH_FAILED`), the camera's id and address, and one suggested
+action, and the camera is retried on its own schedule.
 
 Debug crop storage is off by default and capped by `debug.max_files` when enabled, so a process
 left running for weeks cannot fill the device.

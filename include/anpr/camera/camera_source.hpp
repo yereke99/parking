@@ -10,8 +10,19 @@
 
 namespace anpr {
 
+/// Pixel layout of `Frame::image`.
+enum class PixelFormat {
+    /// CV_8UC3 BGR, what the pipeline processes. Every file, USB and OpenCV source produces it.
+    kBgr,
+    /// Planar YUV 4:2:0 as one CV_8UC1 matrix of height * 3 / 2 rows, straight from the hardware
+    /// decoder. Camera mode converts to BGR only the frames it actually processes, which saves
+    /// the CPU colour conversion of every frame that is dropped as stale anyway.
+    kI420,
+};
+
 struct Frame {
     cv::Mat image;
+    PixelFormat format{PixelFormat::kBgr};
     /// Monotonic milliseconds captured immediately after the read returned.
     std::int64_t capture_ms{0};
     /// Stream position for file sources, otherwise equal to `capture_ms`.
@@ -46,6 +57,21 @@ public:
     [[nodiscard]] virtual std::string describe() const = 0;
     /// True when reconnecting makes sense. False for a finished video file.
     [[nodiscard]] virtual bool reconnectable() const = 0;
+
+    /// After a failed `open`: how long the capture thread should wait before the next attempt,
+    /// replacing its own exponential backoff. 0 keeps the backoff. A camera that rejected the
+    /// password uses this to slow down to one attempt every few minutes.
+    [[nodiscard]] virtual std::int64_t reconnectDelayOverrideMs() const { return 0; }
+    /// True when the source must not be opened again (for example authentication attempts are
+    /// exhausted). The capture thread then stops quietly; the source has already reported why.
+    [[nodiscard]] virtual bool permanentlyFailed() const { return false; }
+    /// True when the source logs its own failures with a diagnostic code (RtspCameraSource), so
+    /// the capture thread's generic reconnect lines would only repeat them and drop to debug.
+    [[nodiscard]] virtual bool reportsOwnErrors() const { return false; }
+    /// Called from another thread while the capture thread stops: a blocking `open` or `read`
+    /// should give up soon (an RTSP camera may otherwise sit in a first-frame wait for seconds).
+    /// Thread-safe. The source is not opened again afterwards.
+    virtual void interrupt() {}
 };
 
 /// Chooses the implementation from `config.kind`, or infers it from the source string.

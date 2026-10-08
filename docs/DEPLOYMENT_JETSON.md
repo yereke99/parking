@@ -55,7 +55,8 @@ sudo jetson_clocks
 
 The image builds the OCR model itself. The detector, `models/license_plate_detector.onnx`, has to
 be exported once on a PC with Python and `ultralytics` and copied into the checkout on the Jetson
-([models/README.md](../models/README.md)). Every command below refuses to start without it.
+([models/README.md](../models/README.md)). Every command below refuses to start without it, except
+the camera scan, check and status, which load no model.
 
 ## 3. Build the image
 
@@ -154,6 +155,41 @@ rotated weekly by logrotate, twelve compressed weeks are kept (`/etc/logrotate.d
 A password containing `$` is expanded by make; call the script directly instead:
 `tools/install_service.sh 'rtsp://user:pa$$word@...' gate-01`.
 
+## 8. Hikvision cameras (camera mode)
+
+Instead of one camera address, camera mode finds every Hikvision camera on the PoE switch and runs
+them all in one process with one shared detector and OCR. [Hikvision cameras](CAMERAS.md) is the
+full guide; on the host it needs, besides section 1:
+
+- A permanent static address on the camera LAN (the PoE switch has no DHCP). An `ip addr add` is
+  wiped by NetworkManager; `tools/camera_lan_setup.sh` adds a NetworkManager profile that never
+  takes the default route, so the GSM modem keeps Internet traffic.
+- JetPack 4.6's own `nvidia-container-toolkit 1.7.0`: a newer toolkit breaks hardware decoding in
+  containers (troubleshooting below).
+
+```sh
+cp config/cameras.env.example config/cameras.env && chmod 600 config/cameras.env  # camera login
+make camera-lan-setup ADDRESS=192.168.10.5/24                   # dry run: the nmcli commands
+make camera-lan-setup ADDRESS=192.168.10.5/24 LAN_ARGS=--apply  # once
+make camera-scan                                                # what is on the switch
+make camera-check                                               # every camera READY?
+make run-cameras                                                # foreground, Ctrl+C stops it
+make camera-service                                             # at boot
+make camera-status                                              # any time
+```
+
+`make camera-service` runs `make check` and the camera check first, refuses to install while a
+camera rejects the login (Hikvision locks an address out after a few failed logins), and installs
+`deploy/systemd/kz-anpr-cameras.service` under the same `kz-anpr` name as `make service`: only one
+ANPR process fits on the 4 GB Nano, so either mode replaces the other. The camera credentials go to
+`/etc/default/kz-anpr`, readable by root only; the service uses only that file, so run
+`make camera-service` again after changing a password. Events go to `var/events.jsonl` as before,
+each with its `camera_id`; logs are in `journalctl -u kz-anpr -f`.
+
+The camera image adds the GStreamer development files to the build stage, so `kz_anpr` drives the
+NVIDIA decoder directly. An image built before camera mode is refused with
+`image ... was built from an older checkout`: run `make docker-build`.
+
 ## Updating
 
 ```sh
@@ -177,3 +213,8 @@ sudo systemctl restart kz-anpr   # when the service is installed
 | `camera_unavailable`, exit code 3 | A video file that cannot be opened. Cameras and RTSP streams are retried instead (`camera_reconnect_failed`): check the address in VLC from another machine |
 | `permission denied ... docker.sock` | Your user is not in the `docker` group yet (section 1) |
 | Out of memory, very slow start | Only one ANPR process fits on the 4 GB Nano: stop the service before running `make` targets |
+| `CAMERA_SUBNET_UNCONFIGURED`, `CAMERA_LAN_NOT_FOUND` | eth0 has no address or no link: `make camera-lan-setup LAN_ARGS=--show`, then section 8 |
+| `RTSP_AUTH_FAILED` | Check the login in `config/cameras.env` (no quotes); wait 30 min if the camera locked itself ([Hikvision cameras](CAMERAS.md#credentials)) |
+| `HARDWARE_DECODER_UNAVAILABLE`, `It isn't a v4l2 driver` | nvidia-container-toolkit is newer than JetPack 4.6's 1.7.0: downgrade it and `apt-mark hold` it |
+| `config/cameras.env ... every user can read it` | `chmod 600 config/cameras.env` |
+| Any other upper-case camera code | Its meaning and action are in the [diagnostic table](CAMERAS.md#diagnostic-codes) |

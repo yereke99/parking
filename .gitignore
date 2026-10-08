@@ -9,8 +9,13 @@ cmake-build-*/
 *.plan
 models/nomeroff/
 
-# Runtime state: TensorRT engine cache, events.jsonl
+# Runtime state: TensorRT engine cache, events.jsonl, camera registry and status
 var/
+
+# Camera passwords (config/cameras.env and any other env file under config/); the template
+# config/cameras.env.example is tracked
+config/**/*.env
+!config/cameras.env.example
 
 # Generated video copies; original test clips are tracked
 /video/compatible/

@@ -509,6 +509,12 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
         std::cerr << error << '\n';
         return 4;
     }
+    // One OCR engine for every stream, like the detector and like camera mode.
+    auto shared_ocr = anpr::makeSharedPlateOcr(config.ocr, config.inference, error);
+    if (shared_ocr == nullptr) {
+        std::cerr << error << '\n';
+        return 4;
+    }
 
     std::vector<std::unique_ptr<Stream>> runtimes;
     runtimes.reserve(sources.size());
@@ -527,6 +533,16 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
             std::make_unique<anpr::AnprPipeline>(stream_config, runtime->sink);
         runtime->pipeline->setDetector(anpr::makeSharedPlateDetectorClient(
             shared_detector, &runtime->pipeline->metrics()));
+        auto ocr_client =
+            anpr::makeSharedPlateOcrClient(shared_ocr, &runtime->pipeline->metrics());
+        if (runtimes.empty()) {
+            anpr::logEvent(anpr::LogLevel::kInfo, "shared_ocr_ready",
+                           anpr::LogFields()
+                               .add("ocr_backend", ocr_client->backendName())
+                               .addQuoted("ocr_model", ocr_client->modelDescription())
+                               .add("streams", sources.size()));
+        }
+        runtime->pipeline->setOcr(std::move(ocr_client));
         if (!runtime->pipeline->loadModels(error)) {
             std::cerr << error << '\n';
             return 4;

@@ -64,4 +64,18 @@ std::unique_ptr<IPlateOcr> makePlateOcr(const OcrConfig& ocr,
                                         const InferenceConfig& inference,
                                         PipelineMetrics* metrics, std::string& error);
 
+class SharedPlateOcrCore;
+
+/// Loads ONE Nomeroff model (one TensorRT engine and execution context) for a group of cameras.
+/// Each camera gets a client: calls are serialized on the shared session, while OCR latency and
+/// call counters are recorded in that camera's own metrics. On a 4 GB Jetson Nano this is what
+/// lets four cameras share one copy of the OCR engine instead of loading four.
+std::shared_ptr<SharedPlateOcrCore> makeSharedPlateOcr(const OcrConfig& ocr,
+                                                       const InferenceConfig& inference,
+                                                       std::string& error);
+/// Wraps an already built reader (tests, or a caller that loaded it itself).
+std::shared_ptr<SharedPlateOcrCore> makeSharedPlateOcr(std::unique_ptr<IPlateOcr> ocr);
+std::unique_ptr<IPlateOcr> makeSharedPlateOcrClient(const std::shared_ptr<SharedPlateOcrCore>& core,
+                                                    PipelineMetrics* metrics);
+
 }  // namespace anpr

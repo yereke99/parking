@@ -110,6 +110,8 @@ public:
                               std::chrono::steady_clock::now() - decode_started)
                               .count();
 
+        // VideoCapture always delivers BGR; the field travels with recycled frame buffers.
+        frame.format = PixelFormat::kBgr;
         frame.capture_ms = monotonicMs();
         frame.sequence = ++sequence_;
         // A file gets a timeline derived from its own frame rate. It must never be mixed with

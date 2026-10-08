@@ -1,0 +1,33 @@
+# Camera-mode ANPR on the Jetson Nano: every Hikvision camera on the PoE switch, in the Docker
+# image built by `make docker-build`. Installed as kz-anpr.service by
+# `tools/install_service.sh --cameras` (`make camera-service`): the same unit name as the
+# single-camera service, because only one ANPR process fits on the 4 GB Nano. The installer fills
+# in the checkout path and the user and writes the camera credentials to /etc/default/kz-anpr
+# (root-only).
+[Unit]
+Description=Kazakhstan parking ANPR (Hikvision cameras)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+# Never give up: a switch or camera that is still booting only means another attempt 10 s later.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@PROJECT_DIR@
+EnvironmentFile=/etc/default/kz-anpr
+Environment=KZ_ANPR_CONTAINER=kz-anpr
+# Credentials come only from /etc/default/kz-anpr, never from config/cameras.env, so the service
+# runs with exactly what the installer checked. Re-run make camera-service to change them.
+Environment=CAMERA_ENV_FILE=
+# A container left behind by a power cut would block the name.
+ExecStartPre=-/usr/bin/docker rm -f kz-anpr
+ExecStart=@PROJECT_DIR@/tools/jetson_docker.sh cameras --cameras --events-file var/events.jsonl
+ExecStopPost=-/usr/bin/docker rm -f kz-anpr
+Restart=always
+RestartSec=10s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
