@@ -12,9 +12,8 @@ models/nomeroff/
 # Runtime state: TensorRT engine cache, events.jsonl
 var/
 
-# Clips recorded from the real camera; only the test clip is tracked
-/video/*
-!/video/parking.mp4
+# Generated video copies; original test clips are tracked
+/video/compatible/
 debug_frames/
 debug_crops/
 

@@ -48,7 +48,8 @@ image.
 `tools/video-list.txt` lists `parking.mp4` and `IMG_5666.mp4` through `IMG_5669.mp4`. On the
 Jetson, run `make run-videos`: it waits for each clip to finish before starting the next, using
 the same Docker image, models and recognition settings as `make run`. The clips are mounted from
-the checkout at `/workspace/video`; they are not copied into the image.
+the checkout at `/workspace/video`; they are not copied into the image. All five original clips
+are tracked in Git, so `git pull` brings the videos along with the code. No image rebuild is needed.
 
 Each run creates a new directory under `var/video-runs/` with events and a log for each clip,
 plus `summary.json`. The terminal prints each clip's confirmed plate list and `RECOGNIZED`,
