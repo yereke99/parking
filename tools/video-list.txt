@@ -1,0 +1,6 @@
+# Clips replayed sequentially by make run-videos; paths are relative to the checkout.
+video/parking.mp4
+video/IMG_5666.mp4
+video/IMG_5667.mp4
+video/IMG_5668.mp4
+video/IMG_5669.mp4

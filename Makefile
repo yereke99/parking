@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: docker-build check run camera service bench shell build test
+.PHONY: docker-build check run run-videos prepare-videos camera service bench shell build test
 
 # Test clip and live camera for `make run`, `make camera` and `make service`.
 VIDEO ?= video/parking.mp4
@@ -20,6 +20,15 @@ check:
 # Replay the test clip once and print the recognised plates.
 run:
 	./tools/jetson_docker.sh run --source "$(VIDEO)" $(RUN_ARGS)
+
+# Replay tools/video-list.txt one clip at a time, saving events, logs and a plate summary.
+# VIDEO_ARGS='--native' uses the existing local build and development config.
+run-videos:
+	python3 tools/run_videos.py $(VIDEO_ARGS)
+
+# Optional, on a machine with FFmpeg: iPhone HEVC -> upright 8-bit H.264 copies.
+prepare-videos:
+	bash tools/prepare_iphone_videos.sh
 
 # Live camera in the foreground (Ctrl+C stops it), for example:
 #   make camera CAMERA='rtsp://user:password@192.168.1.64:554/Streaming/Channels/101'

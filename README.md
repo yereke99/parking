@@ -43,6 +43,46 @@ make service CAMERA='rtsp://user:password@192.168.1.64:554/Streaming/Channels/10
 `make bench` prints FPS and per-stage latency on the test clip. `make shell` opens a shell in the
 image.
 
+## Replay all five videos
+
+`tools/video-list.txt` lists `parking.mp4` and `IMG_5666.mp4` through `IMG_5669.mp4`. On the
+Jetson, run `make run-videos`: it waits for each clip to finish before starting the next, using
+the same Docker image, models and recognition settings as `make run`. The clips are mounted from
+the checkout at `/workspace/video`; they are not copied into the image.
+
+Each run creates a new directory under `var/video-runs/` with events and a log for each clip,
+plus `summary.json`. The terminal prints each clip's confirmed plate list and `RECOGNIZED`,
+`NO_CONFIRMED_PLATES` or `ERROR`. Only `VALID_HIGH_CONFIDENCE` and `VALID_LOW_CONFIDENCE` events
+enter the plate list; this is the recognizer's result, not a ground-truth accuracy comparison.
+File errors do not stop the remaining clips. Configuration/model errors stop the batch because
+they affect every clip; a failed run returns a nonzero exit code. Completed results are saved
+after each clip.
+
+The four iPhone files are 4K, 10-bit HEVC with HLG HDR; the first three also carry a 90-degree
+rotation. Decoder support on the Jetson must be checked with its existing OpenCV backend. To
+avoid changing any container packages, prepare compatible copies on a machine where FFmpeg is
+already available (requires its `libx264` encoder):
+
+```sh
+make prepare-videos  # writes video/compatible/; preserves all originals and their resolution
+# Copy video/compatible/ into the Jetson checkout, then:
+make run-videos VIDEO_ARGS='--input-dir video/compatible'
+```
+
+Preparation applies the rotation and encodes H.264, 8-bit `yuv420p`, retaining the HLG/BT.2020
+color tags. It does not tone-map HDR or alter the recognition pipeline's brightness handling.
+Keeping 4K retains the plate crop sizes used by the current quality gates. It also
+copies the original `parking.mp4` into the same directory. No FFmpeg runs during recognition.
+
+For the existing native development build, with the Nomeroff KZ ONNX model present:
+
+```sh
+make run-videos VIDEO_ARGS='--native'
+make run-videos VIDEO_ARGS='--native --input-dir video/compatible'
+# Custom list/config/new output directory:
+python3 tools/run_videos.py --help
+```
+
 ## Output
 
 Each vehicle produces one JSON line on stdout. `make camera` and the service also append it to
