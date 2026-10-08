@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Prepare the four iPhone HDR clips on a machine with FFmpeg; leave the originals untouched.
+# Prepare every clip in video/ for the Jetson on a machine with FFmpeg; leave the originals
+# untouched. Clips that are already 8-bit H.264 are copied; anything else (the iPhone 10-bit HEVC
+# HDR clips) is re-encoded. Every video file in video/ is handled, however many there are.
 # Usage: tools/prepare_iphone_videos.sh [output directory]
 set -euo pipefail
 
@@ -19,15 +21,29 @@ fi
 filters='format=yuv420p,sidedata=delete'
 temporary=""
 trap 'if [[ -n "$temporary" ]]; then rm -f "$temporary"; fi' EXIT
-for clip in IMG_5666 IMG_5667 IMG_5668 IMG_5669; do
-    echo "Preparing $clip.mp4"
+shopt -s nullglob nocaseglob
+clips=(video/*.mp4 video/*.mov video/*.m4v video/*.mkv video/*.avi)
+shopt -u nullglob nocaseglob
+if (( ${#clips[@]} == 0 )); then
+    echo "ERROR: no video files in video/." >&2
+    exit 2
+fi
+for source in "${clips[@]}"; do
+    clip="$(basename "${source%.*}")"
+    codec="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt \
+        -of csv=p=0 "$source" 2>/dev/null || true)"
+    if [[ "$codec" == "h264,yuv420p" ]]; then
+        echo "Copying $(basename "$source") (already 8-bit H.264)"
+        cp "$source" "$output_dir/$clip.mp4"
+        continue
+    fi
+    echo "Preparing $(basename "$source") (${codec:-unknown codec})"
     temporary="$output_dir/.$clip.tmp.mp4"
-    ffmpeg -hide_banner -loglevel error -nostdin -y -i "video/$clip.mp4" \
+    ffmpeg -hide_banner -loglevel error -nostdin -y -i "$source" \
         -map 0:v:0 -an -vf "$filters" -c:v libx264 -preset fast -crf 18 \
         -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc \
         -map_metadata -1 -metadata:s:v:0 rotate=0 -movflags +faststart "$temporary"
     mv -f "$temporary" "$output_dir/$clip.mp4"
     temporary=""
 done
-cp video/parking.mp4 "$output_dir/parking.mp4"
 echo "Prepared clips: $output_dir"

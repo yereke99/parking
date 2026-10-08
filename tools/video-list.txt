@@ -1,4 +1,6 @@
-# Clips replayed sequentially by make run-videos; paths are relative to the checkout.
+# Optional fixed clip list: make run-videos VIDEO_ARGS='--list tools/video-list.txt'.
+# Without --list, make run-videos replays every video file found in video/, however many there
+# are. Paths are relative to the checkout.
 video/parking.mp4
 video/IMG_5666.mp4
 video/IMG_5667.mp4

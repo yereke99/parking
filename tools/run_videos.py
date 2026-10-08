@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Replay a clip list sequentially with the existing ANPR executable (no extra packages)."""
+"""Replay every clip in video/ one after another with the existing ANPR executable.
+
+Without options every video file found in video/ is replayed, however many there are: add or
+remove clips and the next run follows. --input-dir scans another directory instead (for example
+video/compatible from tools/prepare_iphone_videos.sh), --video picks clips by name, --list reads
+an explicit clip list. No extra packages are needed.
+"""
 
 import argparse
 from collections import Counter
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,12 +20,28 @@ import tempfile
 
 PROJECT = Path(__file__).resolve().parent.parent
 ACCEPTED = {"VALID_HIGH_CONFIDENCE", "VALID_LOW_CONFIDENCE"}
+# Containers OpenCV/FFmpeg/GStreamer read; matched case-insensitively (iPhone clips are .MOV).
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".ts", ".webm", ".h264", ".h265", ".hevc"}
+
+
+def find_videos(directory):
+    """Every video file directly inside `directory`, sorted by name. Hidden files are skipped."""
+    return sorted((path for path in directory.iterdir()
+                   if path.is_file() and not path.name.startswith(".")
+                   and path.suffix.lower() in VIDEO_SUFFIXES),
+                  key=lambda path: path.name.lower())
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--list", default="tools/video-list.txt", help="one clip path per line")
-    parser.add_argument("--input-dir", help="read every listed clip's basename from this directory")
+    parser.add_argument("--input-dir", default="video",
+                        help="directory whose video files are replayed (default: video)")
+    parser.add_argument("--video", action="append", default=[], metavar="NAME",
+                        help="replay only this clip (file name or path, repeatable)")
+    parser.add_argument("--list", help="replay the clips named in this file, one per line, "
+                                       "instead of scanning --input-dir")
+    parser.add_argument("--list-videos", action="store_true",
+                        help="print the clips that would be replayed and exit")
     parser.add_argument("--output-dir", help="new directory for events, logs and summary.json")
     parser.add_argument("--native", action="store_true", help="use a local binary instead of Jetson Docker")
     parser.add_argument("--binary", default="build/kz_anpr", help="local binary for --native")
@@ -29,13 +52,37 @@ def main():
         path = Path(value)
         return path if path.is_absolute() else PROJECT / path
 
+    input_dir = project_path(args.input_dir)
+    if args.list:
+        candidates = []
+        for line in project_path(args.list).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                candidates.append(project_path(line))
+    else:
+        if not input_dir.is_dir():
+            parser.error("video directory not found: %s" % input_dir)
+        candidates = find_videos(input_dir)
+    if args.video:
+        wanted = []
+        for name in args.video:
+            # os.path.realpath, not Path.resolve: Python 3.6 (the Jetson host) raises on a
+            # missing file there.
+            target = os.path.realpath(str(project_path(name)))
+            matches = [path for path in candidates
+                       if path.name == Path(name).name or os.path.realpath(str(path)) == target]
+            if not matches:
+                # A clip outside the scanned set (another directory, a hidden file) by path.
+                path = project_path(name)
+                matches = [path] if path.is_file() else []
+            if not matches:
+                parser.error("video not found: %s (available: %s)" %
+                             (name, ", ".join(path.name for path in candidates) or "none"))
+            wanted.extend(path for path in matches if path not in wanted)
+        candidates = wanted
+
     clips = []
-    for line in project_path(args.list).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        source = (project_path(args.input_dir) / Path(line).name
-                  if args.input_dir else project_path(line))
+    for source in candidates:
         if not source.is_file():
             parser.error("video file not found: %s" % source)
         # Docker mounts only the checkout, and relative paths work unchanged in /workspace.
@@ -47,7 +94,11 @@ def main():
                 parser.error("Docker video must be inside the checkout: %s" % source)
         clips.append(source)
     if not clips:
-        parser.error("video list is empty")
+        parser.error("no video files found in %s" % (args.list or input_dir))
+    if args.list_videos:
+        for source in clips:
+            print(source)
+        return 0
 
     if args.native:
         command = [str(project_path(args.binary)), "--config", args.config or "config/default.yaml"]
