@@ -2,8 +2,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -27,8 +29,10 @@ namespace anpr {
 ///
 /// One processing thread. Every frame pays for a downscaled ROI frame difference and nothing
 /// else until the state machine says otherwise. The detector runs at the cadence the current
-/// state deserves, OCR runs only inside a recognition session, and the session ends as soon as
-/// the consensus has enough evidence.
+/// state deserves. OCR runs only inside recognition sessions, one per readable plate track, each
+/// with its own vote, and each session ends as soon as its consensus has enough evidence. A
+/// plate is readable once its box is inside roi.recognition and large enough; the vehicle does
+/// not have to stop unless `recognition.require_stop` asks for it.
 class AnprPipeline {
 public:
     AnprPipeline(AnprConfig config, PlateSink& sink);
@@ -55,6 +59,9 @@ public:
     void run(FramePump& pump, std::atomic_bool& stop_requested);
     /// Processes one frame. Exposed so the benchmark can drive the pipeline itself.
     void processFrame(const Frame& frame);
+    /// Ends every open recognition session with what it has (a clip ended or the run stops), so
+    /// readings already made are reported instead of silently dropped. `run` calls it itself.
+    void finishPendingRecognition();
 
     [[nodiscard]] const PipelineMetrics& metrics() const { return metrics_; }
     [[nodiscard]] PipelineMetrics& metrics() { return metrics_; }
@@ -74,7 +81,30 @@ private:
     StopDetector stop_detector_;
     VehicleStateMachine state_machine_;
     QualityAssessor quality_assessor_;
+    /// An empty vote, copied into every new plate session.
     PlateConsensus consensus_;
+
+    /// One plate track being read: its own vote, its OCR budget, and the sharpest crop seen in
+    /// the current best-frame window (a copy, since the frame buffer is reused).
+    struct PlateSession {
+        PlateSession(int id, std::int64_t now_ms, PlateConsensus vote)
+            : track_id(id), started_ms(now_ms), last_seen_ms(now_ms), consensus(std::move(vote)) {}
+
+        int track_id;
+        std::int64_t started_ms;
+        std::int64_t last_seen_ms;
+        std::int64_t last_ocr_ms{std::numeric_limits<std::int64_t>::min() / 4};
+        int ocr_attempts{0};
+        /// Reads in a row that gave no valid plate, for recognition.max_unreadable_reads.
+        int unreadable_streak{0};
+        PlateConsensus consensus;
+        bool has_candidate{false};
+        cv::Mat candidate;
+        double candidate_score{0.0};
+        Detection candidate_detection;
+        ImageQuality candidate_quality;
+        std::int64_t candidate_ms{0};
+    };
 
     std::vector<Detection> mapped_detections_;
     cv::Mat enhanced_crop_;
@@ -82,21 +112,31 @@ private:
 
     std::int64_t last_detector_ms_{std::numeric_limits<std::int64_t>::min() / 4};
     std::int64_t last_metrics_ms_{0};
-    std::int64_t recognition_started_ms_{0};
-    int recognition_track_id_{-1};
-    int ocr_attempts_{0};
+    std::int64_t last_frame_ms_{0};
     int saved_crop_count_{0};
-    std::string last_emitted_plate_;
-    std::int64_t last_emitted_ms_{0};
+    std::vector<PlateSession> sessions_;
+    /// Tracks whose session has ended (read, given up or timed out). They are never read again
+    /// while the tracker keeps them, which is the per-vehicle duplicate guard.
+    std::vector<int> finished_tracks_;
+    int last_finished_track_id_{-1};
+    bool confirmed_in_phase_{false};
+    /// Plate text -> time it was last emitted, for duplicate_suppression_ms.
+    std::vector<std::pair<std::string, std::int64_t>> recent_plates_;
 
     [[nodiscard]] std::int64_t detectorIntervalMs(VehicleState state) const;
     [[nodiscard]] bool shouldRunDetector(VehicleState state, std::int64_t now_ms,
                                          const MotionSample& motion) const;
     void runDetector(const cv::Mat& frame, std::int64_t now_ms);
     [[nodiscard]] TrackObservation observeTrack(const cv::Mat& frame, std::int64_t now_ms);
-    void beginRecognition(std::int64_t now_ms, int track_id);
-    void runRecognitionTick(const cv::Mat& frame, std::int64_t now_ms);
-    void finishRecognition(std::int64_t now_ms, bool timed_out);
+    [[nodiscard]] bool isFinishedTrack(int track_id) const;
+    [[nodiscard]] PlateSession* findSession(int track_id);
+    /// A confirmed, not yet read track inside roi.recognition whose box is large enough to read.
+    [[nodiscard]] bool isReadable(const TrackedPlate& track, int frame_width, int frame_height) const;
+    void openSessions(int frame_width, int frame_height, std::int64_t now_ms);
+    void collectCandidates(const cv::Mat& frame, std::int64_t now_ms);
+    void readCandidates(std::int64_t now_ms);
+    void finishSessions(std::int64_t now_ms, bool flush);
+    void finishSession(PlateSession& session, std::int64_t now_ms, bool timed_out);
     std::optional<std::string> saveDebugCrop(const cv::Mat& crop, std::int64_t now_ms, int index);
     void reportMetrics(std::int64_t now_ms, bool force);
     void drawOverlay(const cv::Mat& frame, const TrackObservation& track);

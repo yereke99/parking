@@ -5,8 +5,10 @@
 #include <cstdlib>
 #include <thread>
 
+#include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
 
+#include "anpr/camera/video_orientation.hpp"
 #include "anpr/common/filesystem.hpp"
 #include "anpr/common/logging.hpp"
 
@@ -17,6 +19,10 @@ std::int64_t monotonicMs() {
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
 }
+
+/// cv::CAP_PROP_ORIENTATION_AUTO, by number: the enum value does not exist in older OpenCV
+/// releases, and setting an unknown property is a harmless no-op there.
+constexpr int kCapPropOrientationAuto = 49;
 
 bool looksLikeDeviceIndex(const std::string& source) {
     return !source.empty() &&
@@ -74,6 +80,18 @@ public:
             // handing the pipeline an old view of the barrier.
             capture_.set(cv::CAP_PROP_BUFFERSIZE, std::max(1, config_.capture_buffer_size));
         }
+        rotation_ = 0;
+        if (kind_ == CameraKind::kFile) {
+            // Phone clips are landscape pictures plus a display rotation. Whether OpenCV applies
+            // it depends on its version, so it is switched off where it exists and applied here,
+            // the same way on the Jetson and on a development machine.
+            rotation_ = mp4DisplayRotation(config_.source);
+            if (rotation_ != 0) {
+                capture_.set(kCapPropOrientationAuto, 0);
+                logEvent(LogLevel::kInfo, "video_rotation",
+                         LogFields().add("degrees", rotation_).add("source", describe()));
+            }
+        }
         sequence_ = 0;
         const double reported_fps = capture_.get(cv::CAP_PROP_FPS);
         frame_interval_fps_ = reported_fps > 1.0 ? reported_fps : std::max(1.0, config_.fps);
@@ -96,7 +114,10 @@ public:
         // `read` writes into the existing buffer when the geometry is unchanged, so a steady
         // stream performs no per-frame allocation.
         const auto decode_started = std::chrono::steady_clock::now();
-        if (!capture_.read(frame.image) || frame.image.empty()) {
+        // A rotated clip decodes into its own buffer and is turned into the frame's, so both keep
+        // a fixed geometry and nothing is reallocated per frame.
+        cv::Mat& decoded = rotation_ != 0 ? decoded_ : frame.image;
+        if (!capture_.read(decoded) || decoded.empty()) {
             if (kind_ == CameraKind::kFile) {
                 if (config_.loop_file && capture_.set(cv::CAP_PROP_POS_FRAMES, 0)) {
                     return ReadStatus::kEmpty;
@@ -106,6 +127,13 @@ public:
             return ReadStatus::kFailed;
         }
 
+        if (rotation_ == 90) {
+            cv::rotate(decoded_, frame.image, cv::ROTATE_90_CLOCKWISE);
+        } else if (rotation_ == 180) {
+            cv::rotate(decoded_, frame.image, cv::ROTATE_180);
+        } else if (rotation_ == 270) {
+            cv::rotate(decoded_, frame.image, cv::ROTATE_90_COUNTERCLOCKWISE);
+        }
         frame.decode_ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - decode_started)
                               .count();
@@ -147,6 +175,9 @@ private:
     CameraConfig config_;
     CameraKind kind_;
     cv::VideoCapture capture_;
+    /// Clockwise display rotation of a video file, applied to every frame; 0 for other sources.
+    int rotation_{0};
+    cv::Mat decoded_;
     std::int64_t sequence_{0};
     /// Frame rate used to build a file's timeline. Taken from the container, else from config.
     double frame_interval_fps_{25.0};

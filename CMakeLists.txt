@@ -46,6 +46,7 @@ endfunction()
 # No OpenCV and no inference runtime, so it builds and is tested anywhere.
 # ---------------------------------------------------------------------------
 add_library(kz_anpr_core
+    src/camera/video_orientation.cpp
     src/common/config.cpp
     src/common/json.cpp
     src/common/logging.cpp
@@ -274,6 +275,7 @@ if(KZ_ANPR_BUILD_TESTS)
         tests/test_state_machine.cpp
         tests/test_tracking.cpp
         tests/test_validation.cpp
+        tests/test_video_orientation.cpp
         tests/test_yaml.cpp
     )
     target_link_libraries(kz_anpr_core_tests PRIVATE kz_anpr_core)
@@ -289,6 +291,7 @@ if(KZ_ANPR_BUILD_TESTS)
             tests/test_camera_commands.cpp
             tests/test_frame_pump.cpp
             tests/test_gst_capture.cpp
+            tests/test_moving_recognition.cpp
             tests/test_multi_camera.cpp
             tests/test_nomeroff_onnx.cpp
             tests/test_quality.cpp

@@ -331,6 +331,7 @@ void readAll(Reader& reader, AnprConfig& config, std::string& error) {
     reader.get("ocr.min_confidence", config.ocr.min_confidence);
     reader.get("ocr.min_char_confidence", config.ocr.min_char_confidence);
     reader.get("ocr.max_attempts", config.ocr.max_attempts);
+    reader.get("ocr.min_interval_ms", config.ocr.min_interval_ms);
 
     reader.get("quality.min_plate_width_px", config.quality.min_plate_width_px);
     reader.get("quality.min_plate_height_px", config.quality.min_plate_height_px);
@@ -367,6 +368,9 @@ void readAll(Reader& reader, AnprConfig& config, std::string& error) {
     reader.get("consensus.allow_single_frame", config.consensus.allow_single_frame);
     reader.get("consensus.single_frame_confidence", config.consensus.single_frame_confidence);
 
+    reader.get("recognition.require_stop", config.recognition.require_stop);
+    reader.get("recognition.max_concurrent_plates", config.recognition.max_concurrent_plates);
+    reader.get("recognition.max_unreadable_reads", config.recognition.max_unreadable_reads);
     reader.get("recognition.timeout_ms", config.recognition.timeout_ms);
     reader.get("recognition.cooldown_ms", config.recognition.cooldown_ms);
     reader.get("recognition.leave_confirmation_ms", config.recognition.leave_confirmation_ms);
@@ -571,6 +575,17 @@ bool validateConfig(const AnprConfig& config, std::string& error) {
         return false;
     }
     if (!require(config.ocr.max_attempts > 0, "ocr.max_attempts must be positive")) {
+        return false;
+    }
+    if (!require(config.ocr.min_interval_ms >= 0, "ocr.min_interval_ms must not be negative")) {
+        return false;
+    }
+    if (!require(config.recognition.max_concurrent_plates >= 1,
+                 "recognition.max_concurrent_plates must be at least 1")) {
+        return false;
+    }
+    if (!require(config.recognition.max_unreadable_reads >= 0,
+                 "recognition.max_unreadable_reads must not be negative")) {
         return false;
     }
     if (!require(!config.ocr.model.empty(), "ocr.model must name the Nomeroff ONNX model")) {

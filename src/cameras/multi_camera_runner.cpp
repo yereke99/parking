@@ -464,6 +464,12 @@ private:
             processOne(frame);
             publish(monotonicMs(), false);
         }
+        // A clip that ended (or a stop) must not drop the readings of an open session.
+        try {
+            pipeline_.finishPendingRecognition();
+        } catch (const std::exception& exception) {
+            frameFailed(exception.what());
+        }
         publish(monotonicMs(), true);
         if (ended) {
             logEvent(LogLevel::kInfo, "camera_processing_finished",

@@ -600,6 +600,8 @@ int runMultiStream(const Cli& cli, anpr::AnprConfig config) {
                     break;
                 }
             }
+            // Report what an open recognition session has read when the clip ends.
+            runtime->pipeline->finishPendingRecognition();
             runtime->finished = true;
         });
     }
@@ -846,6 +848,9 @@ int main(int argc, char** argv) {
                     break;
                 }
             }
+            // Each pass is a separate replay of the clip: a session open at its end reports
+            // what it read instead of carrying over into the next pass.
+            pipeline.finishPendingRecognition();
             timeline_offset_ms += last_stream_ms + 1000;
             if (cli.max_frames > 0 && processed >= cli.max_frames) {
                 break;

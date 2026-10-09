@@ -84,6 +84,13 @@ consensus:
   allow_single_frame: false
 
 recognition:
+  # false: a plate is read as soon as it is inside roi.recognition and large enough, while the
+  # vehicle or the camera is still moving. true: only after a confirmed stop (strict barrier).
+  require_stop: false
+  # Plates read at once, each with its own vote.
+  max_concurrent_plates: 3
+  # End a plate's session after this many reads in a row without a valid plate.
+  max_unreadable_reads: 10
   timeout_ms: 30000
   cooldown_ms: 2000
   leave_confirmation_ms: 500

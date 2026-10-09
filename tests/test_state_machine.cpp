@@ -21,6 +21,13 @@ anpr::RecognitionConfig recognitionConfig() {
     return config;
 }
 
+/// The strict barrier behaviour: recognition only after a confirmed stop.
+anpr::RecognitionConfig strictConfig() {
+    anpr::RecognitionConfig config = recognitionConfig();
+    config.require_stop = true;
+    return config;
+}
+
 anpr::TrackObservation movingTrack(int id) {
     anpr::TrackObservation track;
     track.present = true;
@@ -48,6 +55,13 @@ anpr::StateInput input(std::int64_t timestamp_ms, double motion,
     in.timestamp_ms = timestamp_ms;
     in.motion_score = motion;
     in.track = track;
+    return in;
+}
+
+/// The same with a plate that is large enough and inside the recognition zone.
+anpr::StateInput readable(std::int64_t timestamp_ms, double motion, anpr::TrackObservation track) {
+    anpr::StateInput in = input(timestamp_ms, motion, track);
+    in.readable_plate = true;
     return in;
 }
 
@@ -82,8 +96,8 @@ TEST("a tracked plate promotes immediately without waiting on motion") {
     CHECK_EQ(machine.update(input(0, 0.001, track)).state, anpr::VehicleState::kApproaching);
 }
 
-TEST("full approach, stop, recognise, cooldown cycle") {
-    anpr::VehicleStateMachine machine(motionConfig(), recognitionConfig());
+TEST("strict mode: full approach, stop, recognise, cooldown cycle") {
+    anpr::VehicleStateMachine machine(motionConfig(), strictConfig());
 
     anpr::TrackObservation far = movingTrack(7);
     far.in_near_zone = false;
@@ -191,4 +205,77 @@ TEST("an unconfirmed recognition still enters cooldown") {
     machine.markRecognitionActive();
     machine.markRecognitionFinished(4800, false, 7);
     CHECK_EQ(machine.state(), anpr::VehicleState::kCooldown);
+}
+
+TEST("a readable plate starts recognition while the vehicle is still moving") {
+    anpr::VehicleStateMachine machine(motionConfig(), recognitionConfig());
+    anpr::TrackObservation far = movingTrack(7);
+    far.in_near_zone = false;
+    far.in_stop_zone = false;
+    // Too far to read: approaching only.
+    const auto approach = machine.update(input(0, 0.08, far));
+    CHECK_EQ(approach.state, anpr::VehicleState::kApproaching);
+    CHECK(!approach.recognition_ready);
+
+    // Close enough to read, still rolling at 180 px/s, never stopped: recognition starts.
+    const auto rolling = machine.update(readable(200, 0.08, movingTrack(7)));
+    CHECK(rolling.recognition_ready);
+    machine.markRecognitionActive();
+    CHECK_EQ(machine.state(), anpr::VehicleState::kRecognizing);
+    CHECK_EQ(machine.recognitionDeadlineMs().value_or(0), std::int64_t{200 + 3000});
+}
+
+TEST("a readable plate in the near zone starts recognition without a stop") {
+    anpr::VehicleStateMachine machine(motionConfig(), recognitionConfig());
+    machine.update(input(0, 0.08, movingTrack(4)));
+    machine.update(input(100, 0.08, movingTrack(4)));
+    CHECK_EQ(machine.state(), anpr::VehicleState::kNear);
+    CHECK(machine.update(readable(200, 0.08, movingTrack(4))).recognition_ready);
+    machine.markRecognitionActive();
+    CHECK_EQ(machine.state(), anpr::VehicleState::kRecognizing);
+}
+
+TEST("strict mode ignores a readable plate until the vehicle stops") {
+    anpr::VehicleStateMachine machine(motionConfig(), strictConfig());
+    machine.update(input(0, 0.08, movingTrack(7)));
+    machine.update(readable(100, 0.08, movingTrack(7)));
+    CHECK_EQ(machine.state(), anpr::VehicleState::kNear);
+    const auto moving = machine.update(readable(300, 0.08, movingTrack(7)));
+    CHECK(!moving.recognition_ready);
+    machine.markRecognitionActive();  // nothing pending: no effect
+    CHECK_EQ(machine.state(), anpr::VehicleState::kNear);
+    const auto stopped = machine.update(readable(900, 0.004, stoppedTrack(7)));
+    CHECK_EQ(stopped.state, anpr::VehicleState::kStopped);
+    CHECK(stopped.recognition_ready);
+}
+
+TEST("a plate read once is not read again, a new readable plate is after cooldown") {
+    anpr::VehicleStateMachine machine(motionConfig(), recognitionConfig());
+    machine.update(input(0, 0.08, movingTrack(7)));
+    machine.update(readable(100, 0.08, movingTrack(7)));
+    machine.markRecognitionActive();
+    machine.markRecognitionFinished(1000, true, 7);
+    machine.update(input(1050, 0.05, movingTrack(7)));
+    CHECK_EQ(machine.state(), anpr::VehicleState::kCooldown);
+    // The pipeline no longer reports track 7 as readable once it was read: held.
+    for (std::int64_t t = 1100; t < 6000; t += 250) {
+        CHECK(!machine.update(input(t, 0.05, movingTrack(7))).recognition_ready);
+    }
+    // The camera turns to another plate, not read yet: recognition again, without a stop.
+    machine.markRecognitionActive();
+    const auto next = machine.update(readable(6100, 0.05, movingTrack(7)));
+    CHECK(next.recognition_ready);
+    machine.markRecognitionActive();
+    CHECK_EQ(machine.state(), anpr::VehicleState::kRecognizing);
+}
+
+TEST("a readable plate during the cooldown waits for the cooldown") {
+    anpr::VehicleStateMachine machine(motionConfig(), recognitionConfig());
+    machine.update(input(0, 0.08, movingTrack(7)));
+    machine.update(readable(100, 0.08, movingTrack(7)));
+    machine.markRecognitionActive();
+    machine.markRecognitionFinished(1000, false, 7);
+    machine.update(input(1050, 0.05, movingTrack(7)));
+    CHECK(!machine.update(readable(1500, 0.05, movingTrack(9))).recognition_ready);
+    CHECK(machine.update(readable(3100, 0.05, movingTrack(9))).recognition_ready);
 }

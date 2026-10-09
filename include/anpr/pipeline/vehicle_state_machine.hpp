@@ -37,14 +37,19 @@ struct StateInput {
     std::int64_t timestamp_ms{0};
     double motion_score{0.0};
     TrackObservation track;
+    /// A confirmed plate track that has not been read yet is inside the recognition zone and
+    /// large enough to read. With `recognition.require_stop` off this alone opens recognition,
+    /// moving or not.
+    bool readable_plate{false};
 };
 
 struct StateUpdate {
     VehicleState previous{VehicleState::kIdle};
     VehicleState state{VehicleState::kIdle};
     bool changed{false};
-    /// Set on the tick where the vehicle is confirmed stopped. The pipeline opens a recognition
-    /// session and calls `markRecognitionActive`.
+    /// Set on the tick where recognition may start: a readable plate (or, with
+    /// `recognition.require_stop`, a confirmed stop). The pipeline opens its recognition sessions
+    /// and calls `markRecognitionActive`.
     bool recognition_ready{false};
 };
 
@@ -80,6 +85,13 @@ private:
     std::optional<std::int64_t> track_lost_since_ms_;
     std::optional<std::int64_t> recognition_started_ms_;
     int recognized_track_id_{-1};
+    /// Timestamp of the latest update, for a recognition that starts without a stop.
+    std::int64_t last_update_ms_{0};
+    /// recognition_ready was raised without a stop and markRecognitionActive is still due.
+    bool ready_without_stop_{false};
+
+    /// recognition_ready for a readable plate, when stops are not required.
+    bool readyWithoutStop(const StateInput& input);
 
     void enter(VehicleState next, std::int64_t timestamp_ms);
 };

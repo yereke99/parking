@@ -37,9 +37,18 @@ std::optional<std::int64_t> VehicleStateMachine::recognitionDeadlineMs() const {
     return *recognition_started_ms_ + recognition_.timeout_ms;
 }
 
+bool VehicleStateMachine::readyWithoutStop(const StateInput& input) {
+    if (recognition_.require_stop || !input.readable_plate) {
+        return false;
+    }
+    ready_without_stop_ = true;
+    return true;
+}
+
 StateUpdate VehicleStateMachine::update(const StateInput& input) {
     const VehicleState previous = state_;
     const std::int64_t now = input.timestamp_ms;
+    last_update_ms_ = now;
     const TrackObservation& track = input.track;
     bool recognition_ready = false;
 
@@ -84,6 +93,13 @@ StateUpdate VehicleStateMachine::update(const StateInput& input) {
         }
 
         case VehicleState::kApproaching: {
+            // A plate that can be read now is read now: neither the vehicle nor the camera has to
+            // stand still. The near and stop states still pace the detector for vehicles that
+            // are not readable yet.
+            if (readyWithoutStop(input)) {
+                recognition_ready = true;
+                break;
+            }
             if (track.present && track.in_near_zone) {
                 enter(VehicleState::kNear, now);
                 break;
@@ -97,7 +113,12 @@ StateUpdate VehicleStateMachine::update(const StateInput& input) {
         }
 
         case VehicleState::kNear: {
-            if (track.present && track.stopped && track.in_stop_zone) {
+            if (readyWithoutStop(input)) {
+                recognition_ready = true;
+                break;
+            }
+            if (recognition_.require_stop && track.present && track.stopped &&
+                track.in_stop_zone) {
                 enter(VehicleState::kStopped, now);
                 recognition_ready = true;
                 break;
@@ -135,6 +156,13 @@ StateUpdate VehicleStateMachine::update(const StateInput& input) {
             if (!cooldown_elapsed) {
                 break;
             }
+            // A plate nobody has read yet (another vehicle, or the camera turning to a new one)
+            // starts at once; plates already read are never readable again, which is what keeps
+            // a vehicle that stays put from being read twice.
+            if (readyWithoutStop(input)) {
+                recognition_ready = true;
+                break;
+            }
             // A different vehicle already at the barrier must not be blocked by the previous
             // vehicle's cooldown, which is what a queue at a parking entrance looks like.
             if (track.present && track.id != recognized_track_id_) {
@@ -160,7 +188,11 @@ void VehicleStateMachine::markRecognitionActive() {
     if (state_ == VehicleState::kStopped) {
         state_ = VehicleState::kRecognizing;
         recognition_started_ms_ = state_entered_ms_;
+    } else if (ready_without_stop_) {
+        enter(VehicleState::kRecognizing, last_update_ms_);
+        recognition_started_ms_ = last_update_ms_;
     }
+    ready_without_stop_ = false;
 }
 
 void VehicleStateMachine::markRecognitionFinished(std::int64_t timestamp_ms, bool confirmed,
@@ -178,6 +210,8 @@ void VehicleStateMachine::reset() {
     track_lost_since_ms_.reset();
     recognition_started_ms_.reset();
     recognized_track_id_ = -1;
+    last_update_ms_ = 0;
+    ready_without_stop_ = false;
 }
 
 }  // namespace anpr

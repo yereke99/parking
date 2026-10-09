@@ -117,8 +117,14 @@ struct OcrConfig {
     double min_confidence{0.55};
     /// Reject a reading whose weakest character is below this.
     double min_char_confidence{0.30};
-    /// Upper bound on OCR calls in one recognition session. Caps the worst-case GPU cost.
+    /// Upper bound on OCR calls in one recognition session (one plate track). Caps the
+    /// worst-case GPU cost.
     int max_attempts{12};
+    /// Best-frame selection: within each window of this length the sharpest acceptable crop of a
+    /// plate is kept and read once, so a vehicle or camera in motion spends its OCR calls on the
+    /// sharpest views instead of every blurred one. 0 reads every acceptable crop at the
+    /// detector cadence.
+    std::int64_t min_interval_ms{0};
 };
 
 struct QualityConfig {
@@ -188,7 +194,18 @@ struct ConsensusConfig {
 };
 
 struct RecognitionConfig {
-    /// Wall-clock budget for one recognition session, from stop confirmation.
+    /// false: a plate is read as soon as its tracked box is inside roi.recognition and large
+    /// enough to read, whether the vehicle or the camera is moving or not. true: the strict
+    /// barrier behaviour, where reading starts only after a confirmed stop inside roi.stop.
+    bool require_stop{false};
+    /// Plates read at the same time, each with its own vote. Bounds the OCR calls and memory of
+    /// a scene with several vehicles.
+    int max_concurrent_plates{3};
+    /// A plate session ends early after this many reads in a row without a valid Kazakhstan
+    /// plate (a sticker, a sign, a plate too oblique to read), so it stops costing OCR calls.
+    /// 0 disables the limit; ocr.max_attempts still applies.
+    int max_unreadable_reads{0};
+    /// Budget for one plate's recognition session, from the moment it became readable.
     std::int64_t timeout_ms{3000};
     /// Quiet period after a result before the same vehicle can trigger again.
     std::int64_t cooldown_ms{4000};

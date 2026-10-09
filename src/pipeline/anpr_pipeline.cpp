@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -30,6 +32,24 @@ std::int64_t unixTimeMs() {
 
 cv::Rect toRect(const BoundingBox& box) {
     return cv::Rect(box.x, box.y, box.width, box.height);
+}
+
+/// Levenshtein distance; plates are a handful of characters, so the quadratic table is tiny.
+std::size_t editDistance(const std::string& lhs, const std::string& rhs) {
+    std::vector<std::size_t> previous(rhs.size() + 1);
+    std::vector<std::size_t> current(rhs.size() + 1);
+    for (std::size_t j = 0; j <= rhs.size(); ++j) {
+        previous[j] = j;
+    }
+    for (std::size_t i = 1; i <= lhs.size(); ++i) {
+        current[0] = i;
+        for (std::size_t j = 1; j <= rhs.size(); ++j) {
+            const std::size_t substitution = previous[j - 1] + (lhs[i - 1] == rhs[j - 1] ? 0 : 1);
+            current[j] = std::min({previous[j] + 1, current[j - 1] + 1, substitution});
+        }
+        std::swap(previous, current);
+    }
+    return previous[rhs.size()];
 }
 
 /// Turn order on a detector shared by several cameras: a plate being read first, then a vehicle
@@ -242,59 +262,89 @@ TrackObservation AnprPipeline::observeTrack(const cv::Mat& frame, std::int64_t n
     return observation;
 }
 
-void AnprPipeline::beginRecognition(std::int64_t now_ms, int track_id) {
-    consensus_.reset();
-    recognition_started_ms_ = now_ms;
-    recognition_track_id_ = track_id;
-    ocr_attempts_ = 0;
-    ++metrics_.recognition_sessions;
-    state_machine_.markRecognitionActive();
-    logEvent(LogLevel::kInfo, "recognition_started",
-             LogFields().add("track_id", track_id).add("timestamp_ms", now_ms));
+bool AnprPipeline::isFinishedTrack(int track_id) const {
+    return std::find(finished_tracks_.begin(), finished_tracks_.end(), track_id) !=
+           finished_tracks_.end();
 }
 
-void AnprPipeline::runRecognitionTick(const cv::Mat& frame, std::int64_t now_ms) {
-    if (ocr_ == nullptr) {
-        return;
-    }
-
-    // Recognition belongs to the track that opened this session. Never mix observations from a
-    // second visible plate into the same temporal vote. `last_box` is the raw current detection
-    // after tracker.update, so the matching detection has effectively perfect overlap.
-    const TrackedPlate* recognition_track = nullptr;
-    for (const TrackedPlate& track : tracker_.tracks()) {
-        if (track.id == recognition_track_id_) {
-            recognition_track = &track;
-            break;
+AnprPipeline::PlateSession* AnprPipeline::findSession(int track_id) {
+    for (PlateSession& session : sessions_) {
+        if (session.track_id == track_id) {
+            return &session;
         }
     }
-    if (recognition_track == nullptr) {
-        return;
-    }
+    return nullptr;
+}
 
-    int index = 0;
-    for (const Detection& detection : mapped_detections_) {
-        if (iou(detection.box, recognition_track->last_box) < 0.90) {
+bool AnprPipeline::isReadable(const TrackedPlate& track, int frame_width,
+                              int frame_height) const {
+    // Readable is about the plate, not the vehicle: confirmed by the tracker, inside the zone
+    // where OCR is allowed, and at least as large as the quality gate accepts. Waiting for a
+    // stop added nothing once these hold, and missed every vehicle (or camera) that keeps moving.
+    return track.hits >= config_.tracking.min_hits && !isFinishedTrack(track.id) &&
+           track.last_box.width >= config_.quality.min_plate_width_px &&
+           track.last_box.height >= config_.quality.min_plate_height_px &&
+           centerInside(track.last_box, config_.roi.recognition, frame_width, frame_height);
+}
+
+void AnprPipeline::openSessions(int frame_width, int frame_height, std::int64_t now_ms) {
+    for (const TrackedPlate& track : tracker_.tracks()) {
+        if (static_cast<int>(sessions_.size()) >= config_.recognition.max_concurrent_plates) {
+            return;
+        }
+        if (findSession(track.id) != nullptr || !isReadable(track, frame_width, frame_height)) {
             continue;
         }
-        if (ocr_attempts_ >= config_.ocr.max_attempts || consensus_.satisfied()) {
-            return;
-        }
-        if (!centerInside(detection.box, config_.roi.recognition, frame.cols, frame.rows)) {
-            ++metrics_.crops_rejected_roi;
-            return;
-        }
+        PlateSession session(track.id, now_ms, consensus_);
+        session.consensus.reset();
+        sessions_.push_back(std::move(session));
+        ++metrics_.recognition_sessions;
+        logEvent(LogLevel::kInfo, "recognition_started",
+                 LogFields()
+                     .add("track_id", track.id)
+                     .add("timestamp_ms", now_ms)
+                     .add("plate_width", track.last_box.width)
+                     .add("state", toString(state_machine_.state())));
+    }
+}
 
-        const cv::Rect crop_rect = toRect(detection.box);
+void AnprPipeline::collectCandidates(const cv::Mat& frame, std::int64_t now_ms) {
+    // Each detection belongs to at most one session: the track whose raw `last_box` it is
+    // (tracker.update just copied it, so the overlap is effectively perfect). Observations of two
+    // plates are never mixed in one vote.
+    for (const TrackedPlate& track : tracker_.tracks()) {
+        PlateSession* session = findSession(track.id);
+        if (session == nullptr) {
+            continue;
+        }
+        const Detection* match = nullptr;
+        for (const Detection& detection : mapped_detections_) {
+            if (iou(detection.box, track.last_box) >= 0.90) {
+                match = &detection;
+                break;
+            }
+        }
+        if (match == nullptr) {
+            continue;
+        }
+        session->last_seen_ms = now_ms;
+        if (session->ocr_attempts >= config_.ocr.max_attempts || session->consensus.satisfied()) {
+            continue;
+        }
+        if (!centerInside(match->box, config_.roi.recognition, frame.cols, frame.rows)) {
+            ++metrics_.crops_rejected_roi;
+            continue;
+        }
+        const cv::Rect crop_rect = toRect(match->box);
         if (crop_rect.empty()) {
-            return;
+            continue;
         }
         const cv::Mat crop = frame(crop_rect);
 
         ImageQuality quality;
         {
             ScopedTimer timer(metrics_.quality_latency);
-            quality = quality_assessor_.evaluate(crop, detection.box);
+            quality = quality_assessor_.evaluate(crop, match->box);
         }
         if (!quality.acceptable()) {
             if (quality.rejection == QualityRejection::kTooSmall) {
@@ -304,67 +354,134 @@ void AnprPipeline::runRecognitionTick(const cv::Mat& frame, std::int64_t now_ms)
             }
             logEvent(LogLevel::kDebug, "ocr_crop_rejected",
                      LogFields()
+                         .add("track_id", track.id)
                          .add("reason", toString(quality.rejection))
-                         .add("width", detection.box.width)
+                         .add("width", match->box.width)
                          .add("sharpness", quality.sharpness)
                          .add("brightness", quality.brightness));
-            return;
+            continue;
         }
-
+        // Best-frame selection: within the current window keep the sharpest, best exposed view
+        // of this plate; motion-blurred views lose to it and never cost an OCR call.
+        if (session->has_candidate && quality.score <= session->candidate_score) {
+            continue;
+        }
         const cv::Mat& ocr_input =
             quality_assessor_.enhance(crop, quality, enhanced_crop_) ? enhanced_crop_ : crop;
+        ocr_input.copyTo(session->candidate);
+        session->has_candidate = true;
+        session->candidate_score = quality.score;
+        session->candidate_detection = *match;
+        session->candidate_quality = quality;
+        session->candidate_ms = now_ms;
+    }
+}
+
+void AnprPipeline::readCandidates(std::int64_t now_ms) {
+    if (ocr_ == nullptr) {
+        return;
+    }
+    int index = 0;
+    for (PlateSession& session : sessions_) {
+        if (!session.has_candidate ||
+            now_ms - session.last_ocr_ms < config_.ocr.min_interval_ms ||
+            session.ocr_attempts >= config_.ocr.max_attempts || session.consensus.satisfied()) {
+            continue;
+        }
+        session.has_candidate = false;
+        session.last_ocr_ms = now_ms;
 
         // When benchmark/debug crop capture is enabled, retain rejected OCR attempts too. They
         // are the most useful samples for the failure buckets; production keeps this disabled.
-        const std::optional<std::string> crop_path = saveDebugCrop(ocr_input, now_ms, index++);
-        const OcrResult reading = ocr_->recognize(ocr_input);
-        ++ocr_attempts_;
+        const std::optional<std::string> crop_path =
+            saveDebugCrop(session.candidate, now_ms, index++);
+        const OcrResult reading = ocr_->recognize(session.candidate);
+        ++session.ocr_attempts;
         if (!reading.ok()) {
+            ++session.unreadable_streak;
             logEvent(LogLevel::kDebug, "ocr_rejected",
                      LogFields()
+                         .add("track_id", session.track_id)
                          .add("reason", toString(reading.rejection))
                          .add("text", reading.text)
                          .add("confidence", reading.confidence));
-            return;
+            continue;
         }
 
         PlateObservation observation;
         observation.raw_text = reading.text;
-        observation.detector_confidence = detection.confidence;
+        observation.detector_confidence = session.candidate_detection.confidence;
         observation.ocr_confidence = reading.confidence;
         observation.min_char_confidence = reading.min_char_confidence;
-        observation.image_quality = quality.score;
-        observation.plate_box = detection.box;
-        observation.timestamp_ms = now_ms;
+        observation.image_quality = session.candidate_quality.score;
+        observation.plate_box = session.candidate_detection.box;
+        observation.timestamp_ms = session.candidate_ms;
         observation.crop_path = crop_path;
 
         PlateValidationStatus status;
         {
             ScopedTimer timer(metrics_.postprocess_latency);
-            status = consensus_.add(observation);
+            status = session.consensus.add(observation);
         }
         if (status == PlateValidationStatus::kInvalidFormat ||
             status == PlateValidationStatus::kAmbiguous) {
             ++metrics_.observations_invalid_format;
+            ++session.unreadable_streak;
+        } else {
+            session.unreadable_streak = 0;
         }
-        const ConsensusResult current = consensus_.resolve();
+        const ConsensusResult current = session.consensus.resolve();
         logEvent(LogLevel::kDebug, "ocr_candidate",
                  LogFields()
+                     .add("track_id", session.track_id)
                      .add("raw", reading.text)
                      .add("normalized", current.normalized_plate)
                      .add("ocr_confidence", reading.confidence)
                      .add("min_char_confidence", reading.min_char_confidence)
-                     .add("detector_confidence", detection.confidence)
-                     .add("quality", quality.score)
+                     .add("detector_confidence", session.candidate_detection.confidence)
+                     .add("quality", session.candidate_quality.score)
                      .add("validation", toString(status))
                      .add("model_region", reading.region.empty() ? "none" : reading.region));
-        return;
     }
 }
 
-void AnprPipeline::finishRecognition(std::int64_t now_ms, bool timed_out) {
-    const ConsensusResult result = consensus_.resolve();
-    const std::int64_t latency = now_ms - recognition_started_ms_;
+void AnprPipeline::finishSessions(std::int64_t now_ms, bool flush) {
+    for (std::size_t index = 0; index < sessions_.size();) {
+        PlateSession& session = sessions_[index];
+        bool tracked = false;
+        for (const TrackedPlate& track : tracker_.tracks()) {
+            tracked = tracked || track.id == session.track_id;
+        }
+        const bool satisfied = session.consensus.satisfied();
+        const bool exhausted =
+            session.ocr_attempts >= config_.ocr.max_attempts ||
+            (config_.recognition.max_unreadable_reads > 0 &&
+             session.unreadable_streak >= config_.recognition.max_unreadable_reads);
+        const bool timed_out = now_ms - session.started_ms >= config_.recognition.timeout_ms;
+        // The plate left the scene (or the camera turned away): decide with what was read.
+        const bool lost = !tracked &&
+                          now_ms - session.last_seen_ms >= config_.recognition.track_lost_timeout_ms;
+        if (!(satisfied || exhausted || timed_out || lost || flush)) {
+            ++index;
+            continue;
+        }
+        if (session.ocr_attempts == 0 && !timed_out) {
+            // Never read (it left before a usable crop, or the clip ended): nothing to report.
+            logEvent(LogLevel::kDebug, "recognition_dropped",
+                     LogFields().add("track_id", session.track_id).add("reason",
+                                                                       lost ? "lost" : "ended"));
+        } else {
+            finishSession(session, now_ms, timed_out || (exhausted && !satisfied));
+        }
+        finished_tracks_.push_back(session.track_id);
+        last_finished_track_id_ = session.track_id;
+        sessions_.erase(sessions_.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+}
+
+void AnprPipeline::finishSession(PlateSession& session, std::int64_t now_ms, bool timed_out) {
+    const ConsensusResult result = session.consensus.resolve();
+    const std::int64_t latency = now_ms - session.started_ms;
 
     PlateRecognitionEvent event;
     event.normalized_plate = result.normalized_plate;
@@ -390,27 +507,48 @@ void AnprPipeline::finishRecognition(std::int64_t now_ms, bool timed_out) {
     if (accepted) {
         ++metrics_.plates_confirmed;
         metrics_.recognition_latency.add(static_cast<double>(latency));
+        confirmed_in_phase_ = true;
     }
     if (timed_out) {
         ++metrics_.recognition_timeouts;
     }
 
-    // Second guard against duplicates. The state machine already refuses to retrigger for the
-    // same tracked vehicle; this also covers a vehicle that leaves and returns immediately.
-    const bool duplicate = accepted && !last_emitted_plate_.empty() &&
-                           last_emitted_plate_ == event.normalized_plate &&
-                           now_ms - last_emitted_ms_ < config_.recognition.duplicate_suppression_ms;
+    // Second guard against duplicates. A read track is never read again while it is tracked;
+    // this also covers the same plate under a new track (a vehicle that leaves and returns
+    // immediately, or a moving camera that loses and finds it again).
+    recent_plates_.erase(
+        std::remove_if(recent_plates_.begin(), recent_plates_.end(),
+                       [&](const std::pair<std::string, std::int64_t>& entry) {
+                           return now_ms - entry.second >=
+                                  config_.recognition.duplicate_suppression_ms;
+                       }),
+        recent_plates_.end());
+    // An accepted plate is a duplicate only when identical: two vehicles' plates may differ by
+    // one character. A reading that was NOT accepted and is within two characters of a plate
+    // just confirmed is the same vehicle seen again under a new track (a moving camera loses and
+    // finds it), misread: reporting it would only add a wrong plate next to the right one.
+    const bool duplicate =
+        std::any_of(recent_plates_.begin(), recent_plates_.end(),
+                    [&](const std::pair<std::string, std::int64_t>& entry) {
+                        if (accepted) {
+                            return entry.first == event.normalized_plate;
+                        }
+                        const std::string& seen =
+                            event.normalized_plate.empty() ? event.raw_plate : event.normalized_plate;
+                        return !seen.empty() && editDistance(entry.first, seen) <= 2;
+                    });
 
     logEvent(accepted ? LogLevel::kInfo : LogLevel::kWarn,
              accepted ? "plate_confirmed" : "recognition_failed",
              LogFields()
+                 .add("track_id", session.track_id)
                  .add("status", toString(event.status))
                  .add("plate", event.normalized_plate)
                  .add("confidence", event.confidence)
                  .add("agreement", result.agreement)
                  .add("observations", result.total_observations)
                  .add("agreeing", result.agreeing_observations)
-                 .add("ocr_calls", ocr_attempts_)
+                 .add("ocr_calls", session.ocr_attempts)
                  .add("latency_ms", latency)
                  .add("duplicate_suppressed", duplicate ? 1 : 0));
 
@@ -418,12 +556,20 @@ void AnprPipeline::finishRecognition(std::int64_t now_ms, bool timed_out) {
         sink_.onRecognition(event);
     }
     if (accepted) {
-        last_emitted_plate_ = event.normalized_plate;
-        last_emitted_ms_ = now_ms;
+        recent_plates_.emplace_back(event.normalized_plate, now_ms);
     }
+}
 
-    state_machine_.markRecognitionFinished(now_ms, accepted, recognition_track_id_);
-    recognition_track_id_ = -1;
+void AnprPipeline::finishPendingRecognition() {
+    if (sessions_.empty()) {
+        return;
+    }
+    finishSessions(last_frame_ms_, true);
+    if (state_machine_.state() == VehicleState::kRecognizing) {
+        state_machine_.markRecognitionFinished(last_frame_ms_, confirmed_in_phase_,
+                                               last_finished_track_id_);
+        confirmed_in_phase_ = false;
+    }
 }
 
 std::optional<std::string> AnprPipeline::saveDebugCrop(const cv::Mat& crop, std::int64_t now_ms,
@@ -541,6 +687,7 @@ void AnprPipeline::processFrame(const Frame& frame) {
     StateInput input;
     input.timestamp_ms = now_ms;
     input.motion_score = motion.score;
+    last_frame_ms_ = now_ms;
     {
         ScopedTimer timer(metrics_.tracking_latency);
         if (ran_detector) {
@@ -549,6 +696,19 @@ void AnprPipeline::processFrame(const Frame& frame) {
             tracker_.age(now_ms);
         }
         input.track = observeTrack(frame.image, now_ms);
+        // Tracks the tracker dropped never come back under the same id: forget them.
+        finished_tracks_.erase(
+            std::remove_if(finished_tracks_.begin(), finished_tracks_.end(),
+                           [this](int id) {
+                               return std::none_of(
+                                   tracker_.tracks().begin(), tracker_.tracks().end(),
+                                   [id](const TrackedPlate& track) { return track.id == id; });
+                           }),
+            finished_tracks_.end());
+        for (const TrackedPlate& track : tracker_.tracks()) {
+            input.readable_plate = input.readable_plate ||
+                                   isReadable(track, frame.image.cols, frame.image.rows);
+        }
     }
 
     const StateUpdate update = state_machine_.update(input);
@@ -573,18 +733,30 @@ void AnprPipeline::processFrame(const Frame& frame) {
     }
 
     if (update.recognition_ready) {
-        beginRecognition(now_ms, input.track.present ? input.track.id : -1);
+        state_machine_.markRecognitionActive();
+        if (!update.changed) {
+            // Without a stop the machine moves to recognition inside markRecognitionActive.
+            logEvent(LogLevel::kInfo, "state_changed",
+                     LogFields()
+                         .add("from", toString(update.state))
+                         .add("to", toString(state_machine_.state()))
+                         .add("motion", motion.score)
+                         .add("track", input.track.present ? input.track.id : 0)
+                         .add("stationary_ms", input.track.stationary_ms));
+        }
     }
 
     if (state_machine_.state() == VehicleState::kRecognizing) {
+        openSessions(frame.image.cols, frame.image.rows, now_ms);
         if (ran_detector) {
-            runRecognitionTick(frame.image, now_ms);
+            collectCandidates(frame.image, now_ms);
         }
-        const auto deadline = state_machine_.recognitionDeadlineMs();
-        const bool timed_out = deadline && now_ms >= *deadline;
-        const bool exhausted = ocr_attempts_ >= config_.ocr.max_attempts;
-        if (consensus_.satisfied() || timed_out || exhausted) {
-            finishRecognition(now_ms, timed_out || (exhausted && !consensus_.satisfied()));
+        readCandidates(now_ms);
+        finishSessions(now_ms, false);
+        if (sessions_.empty()) {
+            state_machine_.markRecognitionFinished(now_ms, confirmed_in_phase_,
+                                                   last_finished_track_id_);
+            confirmed_in_phase_ = false;
         }
     }
 
@@ -612,6 +784,7 @@ void AnprPipeline::run(FramePump& pump, std::atomic_bool& stop_requested) {
         processFrame(frame);
     }
 
+    finishPendingRecognition();
     const PumpStats pump_stats = pump.stats();
     metrics_.frames_captured = pump_stats.captured;
     metrics_.frames_dropped = pump_stats.dropped;
