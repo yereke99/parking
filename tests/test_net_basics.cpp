@@ -14,6 +14,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#ifdef __linux__
+#include <linux/filter.h>
+#endif
+
 #include "anpr/net/crypto.hpp"
 #include "anpr/net/socket.hpp"
 #include "test_framework.hpp"
@@ -58,6 +62,19 @@ public:
         }
         return ::accept(fd_, nullptr, nullptr);
     }
+
+#ifdef __linux__
+    /// Discards every packet sent to this port, SYNs included, so a connect to it is never
+    /// answered: what a switched-off or filtered camera looks like to the client. True when the
+    /// filter is in place.
+    [[nodiscard]] bool dropEverything() const {
+        sock_filter drop_all[] = {{BPF_RET | BPF_K, 0, 0, 0}};
+        sock_fprog program{};
+        program.len = 1;
+        program.filter = drop_all;
+        return ::setsockopt(fd_, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0;
+    }
+#endif
 
 private:
     int fd_{-1};
@@ -225,11 +242,10 @@ TEST("tcpConnect reports a refused connection on a closed port") {
 
 #ifdef __linux__
 TEST("tcpConnect times out when the handshake never completes") {
-    // Linux drops SYNs while a listener's accept queue is full, which is exactly what a
-    // switched-off camera looks like to the client.
-    const Listener listener(0);
-    auto filler = anpr::net::tcpConnect(kLoopback, listener.port(), 500);  // Fills the queue.
-    CHECK_EQ(filler.outcome, ConnectOutcome::kConnected);
+    // A socket filter, not a full accept queue: how many handshakes a listen(fd, 0) queue
+    // completes depends on the kernel and on SYN cookies (none on the Jetson's 4.9 kernel).
+    const Listener listener;
+    CHECK(listener.dropEverything());
     const auto start = std::chrono::steady_clock::now();
     const auto blocked = anpr::net::tcpConnect(kLoopback, listener.port(), 250);
     CHECK_EQ(blocked.outcome, ConnectOutcome::kTimeout);
@@ -379,9 +395,8 @@ TEST("probePorts handles more probes than descriptors in flight") {
 
 #ifdef __linux__
 TEST("probePorts times out connects that never complete") {
-    const Listener listener(0);
-    auto filler = anpr::net::tcpConnect(kLoopback, listener.port(), 500);
-    CHECK_EQ(filler.outcome, ConnectOutcome::kConnected);
+    const Listener listener;
+    CHECK(listener.dropEverything());
     const auto start = std::chrono::steady_clock::now();
     const auto probes = anpr::net::probePorts({kLoopback}, {listener.port(), closedPort()}, 250, 4);
     CHECK_EQ(probes.size(), std::size_t{2});
