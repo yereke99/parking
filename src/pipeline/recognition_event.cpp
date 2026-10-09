@@ -137,6 +137,13 @@ std::string toJson(const PlateRecognitionEvent& event) {
     out << ",\"agreeing_observations\":" << event.agreeing_observations;
     out << ',';
     writeOptional(out, "best_crop_path", event.best_crop_path);
+    if (event.snapshot_path) {
+        out << ',';
+        writeOptional(out, "snapshot_path", event.snapshot_path);
+        if (event.snapshot_timestamp_ms) {
+            out << ",\"snapshot_timestamp_ms\":" << *event.snapshot_timestamp_ms;
+        }
+    }
     out << '}';
     return out.str();
 }

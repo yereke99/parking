@@ -48,6 +48,9 @@ struct PlateRecognitionEvent {
     int observation_count{0};
     int agreeing_observations{0};
     std::optional<std::string> best_crop_path;
+    /// Full original frame used for the read that confirmed the plate, when requested.
+    std::optional<std::string> snapshot_path;
+    std::optional<std::int64_t> snapshot_timestamp_ms;
     RecognitionStatus status{RecognitionStatus::kNoPlate};
 };
 

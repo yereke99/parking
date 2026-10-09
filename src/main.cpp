@@ -33,6 +33,7 @@ void usage() {
                      or a GStreamer pipeline. Repeat for multiple streams.
   --camera-id ID     identifier written into every event
   --events-file PATH also append every recognition event to PATH, one JSON object per line
+  --snapshots-dir PATH save full-frame JPEGs for confirmed plates (single source only)
   --backend B        auto | tensorrt | onnx_cuda | onnx_cpu | opencv_dnn
   --log-level L      error | warn | info | debug
   --timeline         one debug line per processed frame
@@ -66,6 +67,7 @@ struct Cli {
     std::vector<std::string> sources;
     std::string camera_id;
     std::string events_file;
+    std::string snapshots_dir;
     std::string backend;
     std::string log_level;
     bool timeline{false};
@@ -122,6 +124,8 @@ bool parseArgs(int argc, char** argv, Cli& cli, std::string& error) {
             if (!value(cli.camera_id)) return false;
         } else if (arg == "--events-file") {
             if (!value(cli.events_file)) return false;
+        } else if (arg == "--snapshots-dir") {
+            if (!value(cli.snapshots_dir)) return false;
         } else if (arg == "--backend") {
             if (!value(cli.backend)) return false;
         } else if (arg == "--log-level") {
@@ -148,6 +152,10 @@ bool parseArgs(int argc, char** argv, Cli& cli, std::string& error) {
     }
     if (cli.cameraCommandCount() == 1 && !cli.sources.empty()) {
         error = "--source cannot be combined with camera mode: camera mode finds its cameras";
+        return false;
+    }
+    if (!cli.snapshots_dir.empty() && (cli.cameraCommandCount() != 0 || cli.sources.size() > 1)) {
+        error = "--snapshots-dir requires single-source mode";
         return false;
     }
     return true;
@@ -321,6 +329,7 @@ int main(int argc, char** argv) {
         }
 
         anpr::AnprPipeline pipeline(config, *event_sink);
+        pipeline.setSnapshotDirectory(cli.snapshots_dir);
         if (!pipeline.loadModels(error)) {
             anpr::logEvent(anpr::LogLevel::kError, "model_load_failed",
                            anpr::LogFields().add("reason", error));

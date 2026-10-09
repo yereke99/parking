@@ -309,6 +309,8 @@ void AnprPipeline::openSessions(int frame_width, int frame_height, std::int64_t 
 }
 
 void AnprPipeline::collectCandidates(const cv::Mat& frame, std::int64_t now_ms) {
+    // Several plates selected from this frame share one copy, even for a 4K clip.
+    cv::Mat snapshot_frame;
     // Each detection belongs to at most one session: the track whose raw `last_box` it is
     // (tracker.update just copied it, so the overlap is effectively perfect). Observations of two
     // plates are never mixed in one vote.
@@ -369,6 +371,12 @@ void AnprPipeline::collectCandidates(const cv::Mat& frame, std::int64_t now_ms) 
         const cv::Mat& ocr_input =
             quality_assessor_.enhance(crop, quality, enhanced_crop_) ? enhanced_crop_ : crop;
         ocr_input.copyTo(session->candidate);
+        if (!snapshot_directory_.empty()) {
+            if (snapshot_frame.empty()) {
+                snapshot_frame = frame.clone();
+            }
+            session->candidate_frame = snapshot_frame;
+        }
         session->has_candidate = true;
         session->candidate_score = quality.score;
         session->candidate_detection = *match;
@@ -553,11 +561,53 @@ void AnprPipeline::finishSession(PlateSession& session, std::int64_t now_ms, boo
                  .add("duplicate_suppressed", duplicate ? 1 : 0));
 
     if (!duplicate) {
+        if (accepted) {
+            saveSnapshot(session, event);
+        }
         sink_.onRecognition(event);
     }
     if (accepted) {
         recent_plates_.emplace_back(event.normalized_plate, now_ms);
     }
+}
+
+void AnprPipeline::saveSnapshot(const PlateSession& session, PlateRecognitionEvent& event) {
+    if (snapshot_directory_.empty() || session.candidate_frame.empty()) {
+        return;
+    }
+    std::string plate_name = event.normalized_plate;
+    for (char& ch : plate_name) {
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9'))) {
+            ch = '_';
+        }
+    }
+    const std::string stem = plate_name + '_' + std::to_string(session.candidate_ms) +
+                             "_t" + std::to_string(session.track_id);
+    std::string error;
+    try {
+        const filesystem::path directory(snapshot_directory_);
+        filesystem::create_directories(directory);
+        filesystem::path path = directory / (stem + ".jpg");
+        for (int suffix = 2; filesystem::exists(path); ++suffix) {
+            path = directory / (stem + '_' + std::to_string(suffix) + ".jpg");
+        }
+        if (cv::imwrite(path.string(), session.candidate_frame)) {
+            event.snapshot_path = path.string();
+            event.snapshot_timestamp_ms = session.candidate_ms;
+            logEvent(LogLevel::kInfo, "plate_snapshot_saved",
+                     LogFields().add("plate", event.normalized_plate).add("path", path.string())
+                         .add("timestamp_ms", session.candidate_ms));
+            return;
+        }
+        error = "JPEG encoder returned false";
+    } catch (const std::exception& failure) {
+        error = failure.what();
+    }
+    // Storage trouble must not discard the recognition event or stop the next vehicle.
+    logEvent(LogLevel::kWarn, "plate_snapshot_failed",
+             LogFields().add("plate", event.normalized_plate)
+                 .add("directory", snapshot_directory_).addQuoted("error", error));
 }
 
 void AnprPipeline::finishPendingRecognition() {

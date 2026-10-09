@@ -3,15 +3,19 @@
 // sessions when a clip ends. Synthetic frames, a scripted detector and a scripted OCR stand in for
 // the models.
 #include <algorithm>
+#include <chrono>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include "anpr/camera/camera_source.hpp"
 #include "anpr/common/config.hpp"
+#include "anpr/common/filesystem.hpp"
 #include "anpr/detection/plate_detector.hpp"
 #include "anpr/ocr/plate_ocr.hpp"
 #include "anpr/pipeline/anpr_pipeline.hpp"
@@ -24,6 +28,20 @@ namespace {
 constexpr int kWidth = 1280;
 constexpr int kHeight = 720;
 constexpr int kFrameMs = 40;
+
+struct SnapshotDirectory {
+    SnapshotDirectory() {
+        path = anpr::filesystem::temp_directory_path() /
+               ("kz_anpr_snapshots_" + std::to_string(
+                   std::chrono::steady_clock::now().time_since_epoch().count()));
+        anpr::filesystem::create_directories(path);
+    }
+    ~SnapshotDirectory() {
+        std::error_code ignored;
+        anpr::filesystem::remove_all(path, ignored);
+    }
+    anpr::filesystem::path path;
+};
 
 /// One plate in one frame: where it is, which text it carries and whether it is sharp.
 struct PlateSpec {
@@ -147,6 +165,10 @@ struct Harness {
         }
         anpr::Frame frame;
         frame.image = drawFrame(plates);
+        if (mark_frame_time) {
+            const int level = static_cast<int>(time_ms / kFrameMs) % 200;
+            frame.image(cv::Rect(0, 0, 32, 32)).setTo(cv::Scalar::all(level));
+        }
         frame.stream_ms = time_ms;
         frame.capture_ms = time_ms;
         frame.sequence = ++sequence;
@@ -160,6 +182,7 @@ struct Harness {
     ScriptedOcr* ocr{nullptr};
     std::int64_t time_ms{0};
     std::int64_t sequence{0};
+    bool mark_frame_time{false};
 };
 
 /// A plate crossing the frame at 15 px per 40 ms frame (375 px/s): never stationary.
@@ -186,6 +209,7 @@ TEST("a plate is read while the vehicle keeps moving, without a stop") {
     }
     CHECK(plates(harness.sink) == std::vector<std::string>{"152JTA02"});
     CHECK(harness.pipeline.state() != anpr::VehicleState::kStopped);
+    CHECK(!harness.sink.events().front().snapshot_path);
 }
 
 TEST("strict mode still waits for a stop and reads nothing from a moving plate") {
@@ -300,4 +324,101 @@ TEST("the same vehicle misread under a new track is not reported next to its pla
         harness.step({PlateSpec{movingBox(index)}});
     }
     CHECK((plates(harness.sink) == std::vector<std::string>{"152JTA02", "153JTA02"}));
+}
+
+TEST("video snapshots keep each moving plate's full selected frame and skip duplicates") {
+    SnapshotDirectory directory;
+    anpr::AnprConfig config = movingConfig();
+    config.ocr.min_interval_ms = 200;
+    Harness harness(config);
+    harness.pipeline.setSnapshotDirectory(directory.path.string());
+    harness.mark_frame_time = true;
+    for (int index = 0; index < 60; ++index) {
+        harness.step({PlateSpec{movingBox(index, 200)}, PlateSpec{movingBox(index, 500), true}});
+    }
+    CHECK_EQ(harness.sink.events().size(), std::size_t{2});
+    bool selected_earlier_frame = false;
+    for (const auto& event : harness.sink.events()) {
+        CHECK(anpr::isAccepted(event.status));
+        CHECK(event.snapshot_path.has_value());
+        CHECK(event.snapshot_timestamp_ms.has_value());
+        CHECK(*event.snapshot_timestamp_ms <= event.timestamp_ms);
+        selected_earlier_frame = selected_earlier_frame ||
+                                *event.snapshot_timestamp_ms < event.timestamp_ms;
+        const anpr::filesystem::path image_path(*event.snapshot_path);
+        CHECK_EQ(image_path.parent_path().string(), directory.path.string());
+        CHECK(image_path.filename().string().find(event.normalized_plate + '_') == 0);
+        const cv::Mat image = cv::imread(*event.snapshot_path);
+        CHECK_EQ(image.cols, kWidth);
+        CHECK_EQ(image.rows, kHeight);
+        // The saved plate must be at its position in the selected frame, even when OCR used
+        // an older crop from its best-frame window while the car kept moving.
+        const int y = event.normalized_plate == "152JTA02" ? 200 : 500;
+        const int frame_index = static_cast<int>(*event.snapshot_timestamp_ms / kFrameMs);
+        const cv::Rect box = movingBox(frame_index, y);
+        cv::Scalar mean;
+        cv::Scalar deviation;
+        cv::meanStdDev(image(box), mean, deviation);
+        CHECK(deviation[0] > 35.0);
+        // A frame-specific marker proves the frame matches the reported time, rather than
+        // merely containing a plate nearby in the later confirmation frame.
+        const cv::Scalar marker = cv::mean(image(cv::Rect(8, 8, 16, 16)));
+        CHECK_NEAR(marker[0], static_cast<double>(frame_index % 200), 2.0);
+    }
+    CHECK(selected_earlier_frame);
+    std::size_t count = 0;
+    for (const auto& entry : anpr::filesystem::directory_iterator(directory.path)) {
+        CHECK_EQ(entry.path().extension().string(), std::string(".jpg"));
+        ++count;
+    }
+    CHECK_EQ(count, std::size_t{2});
+}
+
+TEST("an unconfirmed plate creates no video snapshot") {
+    SnapshotDirectory directory;
+    anpr::AnprConfig config = movingConfig();
+    config.consensus.min_samples = 50;
+    config.consensus.required_votes = 50;
+    config.ocr.max_attempts = 4;
+    Harness harness(config);
+    harness.pipeline.setSnapshotDirectory(directory.path.string());
+    for (int index = 0; index < 60; ++index) {
+        harness.step({PlateSpec{movingBox(index)}});
+    }
+    CHECK_EQ(harness.sink.events().size(), std::size_t{1});
+    CHECK(!anpr::isAccepted(harness.sink.events().front().status));
+    CHECK(!harness.sink.events().front().snapshot_path);
+    CHECK(anpr::filesystem::is_empty(directory.path));
+}
+
+TEST("a snapshot storage error does not discard the confirmed plate") {
+    SnapshotDirectory directory;
+    const auto blocked = directory.path / "file";
+    { std::ofstream file(blocked.string()); file << "not a directory"; }
+    Harness harness(movingConfig());
+    harness.pipeline.setSnapshotDirectory((blocked / "photos").string());
+    for (int index = 0; index < 60; ++index) {
+        harness.step({PlateSpec{movingBox(index)}});
+    }
+    CHECK(plates(harness.sink) == std::vector<std::string>{"152JTA02"});
+    CHECK(!harness.sink.events().front().snapshot_path);
+    CHECK_EQ(harness.ocr->calls, 3);
+}
+
+TEST("a second replay into the same snapshot directory preserves the first photo") {
+    SnapshotDirectory directory;
+    std::vector<std::string> paths;
+    for (int replay = 0; replay < 2; ++replay) {
+        Harness harness(movingConfig());
+        harness.pipeline.setSnapshotDirectory(directory.path.string());
+        for (int index = 0; index < 20; ++index) {
+            harness.step({PlateSpec{movingBox(index)}});
+        }
+        CHECK_EQ(harness.sink.events().size(), std::size_t{1});
+        CHECK(harness.sink.events().front().snapshot_path.has_value());
+        paths.push_back(*harness.sink.events().front().snapshot_path);
+    }
+    CHECK(paths[0] != paths[1]);
+    CHECK(anpr::filesystem::is_regular_file(paths[0]));
+    CHECK(anpr::filesystem::is_regular_file(paths[1]));
 }

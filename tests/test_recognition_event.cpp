@@ -55,6 +55,17 @@ TEST("only valid readings may open the barrier") {
     CHECK(!anpr::isAccepted(anpr::RecognitionStatus::kTimeout));
 }
 
+TEST("snapshot metadata is optional and carries the selected video frame time") {
+    auto event = confirmedEvent();
+    CHECK(anpr::toJson(event).find("snapshot_path") == std::string::npos);
+    event.snapshot_path = "photos/152JTA02_8400_t1.jpg";
+    event.snapshot_timestamp_ms = 8400;
+    const std::string json = anpr::toJson(event);
+    CHECK(json.find("\"snapshot_path\":\"photos/152JTA02_8400_t1.jpg\"") != std::string::npos);
+    CHECK(json.find("\"snapshot_timestamp_ms\":8400") != std::string::npos);
+    CHECK(json.find("\"timestamp_ms\":8533") != std::string::npos);
+}
+
 TEST("the events file gets one line per event and is appended across restarts") {
     const anpr::filesystem::path path =
         anpr::filesystem::temp_directory_path() / "kz_anpr_test_events.jsonl";

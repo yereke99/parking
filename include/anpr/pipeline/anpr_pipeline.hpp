@@ -46,6 +46,8 @@ public:
     /// Injects a detector, for the benchmark's detector-only mode and for tests.
     void setDetector(std::unique_ptr<IPlateDetector> detector);
     void setOcr(std::unique_ptr<IPlateOcr> ocr);
+    /// Opt-in full-frame JPEGs for accepted events. Disabled for normal camera runs.
+    void setSnapshotDirectory(std::string directory) { snapshot_directory_ = std::move(directory); }
 
     /// Runs one detector and one OCR inference over blank buffers.
     ///
@@ -100,6 +102,8 @@ private:
         PlateConsensus consensus;
         bool has_candidate{false};
         cv::Mat candidate;
+        /// Original frame behind the selected OCR crop; retained only when snapshots are enabled.
+        cv::Mat candidate_frame;
         double candidate_score{0.0};
         Detection candidate_detection;
         ImageQuality candidate_quality;
@@ -109,6 +113,7 @@ private:
     std::vector<Detection> mapped_detections_;
     cv::Mat enhanced_crop_;
     cv::Mat visualization_;
+    std::string snapshot_directory_;
 
     std::int64_t last_detector_ms_{std::numeric_limits<std::int64_t>::min() / 4};
     std::int64_t last_metrics_ms_{0};
@@ -137,6 +142,7 @@ private:
     void readCandidates(std::int64_t now_ms);
     void finishSessions(std::int64_t now_ms, bool flush);
     void finishSession(PlateSession& session, std::int64_t now_ms, bool timed_out);
+    void saveSnapshot(const PlateSession& session, PlateRecognitionEvent& event);
     std::optional<std::string> saveDebugCrop(const cv::Mat& crop, std::int64_t now_ms, int index);
     void reportMetrics(std::int64_t now_ms, bool force);
     void drawOverlay(const cv::Mat& frame, const TrackObservation& track);

@@ -13,6 +13,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,50 @@ def find_videos(directory):
                   key=lambda path: path.name.lower())
 
 
+def run_clip(command, source, photos_dir, native, events_out, log_out):
+    """Save directly into the results whenever the recognizer can write there.
+
+    External Docker --output-dir locations use staging in the existing writable mount;
+    completed photos are kept even when the run is interrupted.
+    """
+    def recognize(target):
+        try:
+            return subprocess.run(
+                command + ["--source", str(source), "--camera-id", source.stem,
+                           "--snapshots-dir", target],
+                cwd=str(PROJECT), stdout=events_out, stderr=log_out).returncode
+        except OSError as error:
+            log_out.write(str(error) + "\n")
+            return 1
+
+    if native:
+        return recognize(str(photos_dir)), []
+    staging_root = PROJECT / "var"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    try:
+        relative = Path(os.path.realpath(str(photos_dir))).relative_to(
+            Path(os.path.realpath(str(staging_root))))
+    except ValueError:
+        pass
+    else:
+        return recognize("/workspace/var/" + relative.as_posix()), []
+
+    snapshot_errors = []
+    with tempfile.TemporaryDirectory(prefix=".snapshots-", dir=str(staging_root)) as temporary:
+        staging = Path(temporary)
+        target = "/workspace/" + staging.relative_to(PROJECT).as_posix()
+        try:
+            returncode = recognize(target)
+        finally:
+            for image in sorted(staging.glob("*.jpg")):
+                try:
+                    photos_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(image), str(photos_dir / image.name))
+                except OSError as error:
+                    snapshot_errors.append("%s: %s" % (image.name, error))
+    return returncode, snapshot_errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", default="video",
@@ -42,7 +87,7 @@ def main():
                                        "instead of scanning --input-dir")
     parser.add_argument("--list-videos", action="store_true",
                         help="print the clips that would be replayed and exit")
-    parser.add_argument("--output-dir", help="new directory for events, logs and summary.json")
+    parser.add_argument("--output-dir", help="new directory for photos, events, logs and summary.json")
     parser.add_argument("--native", action="store_true", help="use a local binary instead of Jetson Docker")
     parser.add_argument("--binary", default="build/kz_anpr", help="local binary for --native")
     parser.add_argument("--config", help="override the existing Docker/native configuration")
@@ -122,17 +167,13 @@ def main():
         name = "%02d-%s" % (index, source.stem)
         events_path = output / (name + ".events.jsonl")
         log_path = output / (name + ".log")
+        photos_dir = output / name / "photos"
         print("[%d/%d] %s" % (index, len(clips), source.name), flush=True)
         with events_path.open("w", encoding="utf-8") as events_out, \
                 log_path.open("w", encoding="utf-8") as log_out:
-            try:
-                # Blocking run: a clip finishes before the next process/container starts.
-                returncode = subprocess.run(
-                    command + ["--source", str(source), "--camera-id", source.stem],
-                    cwd=str(PROJECT), stdout=events_out, stderr=log_out).returncode
-            except OSError as error:
-                log_out.write(str(error) + "\n")
-                returncode = 1
+            # Blocking run: a clip finishes before the next process/container starts.
+            returncode, snapshot_errors = run_clip(
+                command, source, photos_dir, args.native, events_out, log_out)
 
         events = []
         parse_error = None
@@ -148,22 +189,53 @@ def main():
 
         plates = sorted({event["normalized_plate"] for event in events
                          if event.get("status") in ACCEPTED and event.get("normalized_plate")})
-        status = ("ERROR" if returncode != 0 or parse_error else
+        snapshots = []
+        if not parse_error:
+            for event in events:
+                if event.get("status") not in ACCEPTED:
+                    continue
+                snapshot_path = event.get("snapshot_path")
+                image = photos_dir / Path(snapshot_path).name if snapshot_path else None
+                if image is not None and image.is_file():
+                    # Paths in the saved report are relative to this run, on the host; they
+                    # never point at a temporary directory or a container-only /workspace.
+                    event["snapshot_path"] = image.relative_to(output).as_posix()
+                    snapshots.append({
+                        "plate": event.get("normalized_plate"),
+                        "timestamp_ms": event.get("snapshot_timestamp_ms"),
+                        "image": event["snapshot_path"],
+                    })
+                else:
+                    snapshot_errors.append("no photo saved for %s" % event.get("normalized_plate"))
+                    event.pop("snapshot_path", None)
+                    event.pop("snapshot_timestamp_ms", None)
+            events_path.write_text(
+                "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
+                encoding="utf-8")
+        status = ("ERROR" if returncode != 0 or parse_error or snapshot_errors else
                   "RECOGNIZED" if plates else "NO_CONFIRMED_PLATES")
         result = {
             "video": str(source), "status": status, "exit_code": returncode,
             "recognized_plates": plates,
             "event_statuses": dict(Counter(event.get("status", "UNKNOWN") for event in events)),
             "events_file": events_path.name, "log_file": log_path.name,
+            "photos_dir": photos_dir.relative_to(output).as_posix(),
+            "snapshots": snapshots,
         }
         if parse_error:
             result["output_error"] = parse_error
+        if snapshot_errors:
+            result["snapshot_errors"] = snapshot_errors
         results.append(result)
         # Save after every clip so a later failure does not erase earlier results.
         (output / "summary.json").write_text(
             json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print("  %s | plates: %s | events: %d" %
               (status, ", ".join(plates) or "-", len(events)), flush=True)
+        if snapshots:
+            print("  Photos: %s (%d)" % (photos_dir, len(snapshots)), flush=True)
+        for error in snapshot_errors:
+            print("  Photo error: %s" % error, flush=True)
         if status == "ERROR":
             print("  exit=%d; see %s" % (returncode, log_path), flush=True)
             # A missing model/backend or invalid config affects every clip equally.

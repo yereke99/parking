@@ -82,7 +82,16 @@ make run VIDEO=video/IMG_5667.mp4                  # one clip, events on the ter
 ```
 
 Each run creates a new directory under `var/video-runs/` with events and a log for each clip,
-plus `summary.json`. The terminal prints each clip's confirmed plate list and `RECOGNIZED`,
+plus `summary.json`. Every confirmed plate also gets a full-frame JPEG from the OCR read that
+confirmed it, in `<clip>/photos/`, for example `01-IMG_5666/photos/152JTA02_8533_t1.jpg`.
+The file name starts with the plate, followed by the frame's time in milliseconds and the track
+id. Several vehicles get their own photos; suppressed duplicates and unconfirmed readings do not.
+Images keep the original processed frame size and orientation. `summary.json` lists each photo,
+plate and frame time; `snapshot_path` in the events file is relative to the run directory.
+Photo write failures are reported without discarding the recognised plate.
+Rebuild the image once after updating to this feature (`make docker-build`); its dependency
+versions and models are unchanged. Adding further video clips still needs no rebuild.
+The terminal prints each clip's confirmed plate list and `RECOGNIZED`,
 `NO_CONFIRMED_PLATES` or `ERROR`. Only `VALID_HIGH_CONFIDENCE` and `VALID_LOW_CONFIDENCE` events
 enter the plate list; this is the recognizer's result, not a ground-truth accuracy comparison.
 File errors do not stop the remaining clips. Configuration/model errors stop the batch because
