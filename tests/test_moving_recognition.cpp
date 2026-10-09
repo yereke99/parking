@@ -78,6 +78,8 @@ public:
     int calls{0};
     int blurred_calls{0};
     std::string override_text;
+    /// When set, reads cycle through these texts (disagreeing misreads).
+    std::vector<std::string> cycle;
 
     anpr::OcrResult recognize(const cv::Mat& plate) override {
         ++calls;
@@ -91,7 +93,8 @@ public:
             ++blurred_calls;
         }
         anpr::OcrResult result;
-        result.text = !override_text.empty() ? override_text
+        result.text = !cycle.empty()          ? cycle[static_cast<std::size_t>(calls) % cycle.size()]
+                      : !override_text.empty() ? override_text
                       : mean[0] > 150.0     ? "808LUV02"
                                             : "152JTA02";
         result.confidence = 0.92F;
@@ -268,7 +271,7 @@ TEST("an unreadable plate stops costing OCR calls after max_unreadable_reads") {
 
 TEST("the same vehicle misread under a new track is not reported next to its plate") {
     anpr::AnprConfig config = movingConfig();
-    config.recognition.max_unreadable_reads = 4;
+    config.ocr.max_attempts = 4;
     config.recognition.cooldown_ms = 500;
     Harness harness(config);
     for (int index = 0; index < 20; ++index) {
@@ -279,8 +282,8 @@ TEST("the same vehicle misread under a new track is not reported next to its pla
     for (int index = 0; index < 50; ++index) {
         harness.step({});
     }
-    // ...and finds it again as a new track, misread with a character missing every time.
-    harness.ocr->override_text = "052JTA0";
+    // ...and finds it again as a new track, misread one character off, never three alike.
+    harness.ocr->cycle = {"052JTA02", "152JTA05", "052JTA02", "152ITA02"};
     for (int index = 0; index < 20; ++index) {
         harness.step({PlateSpec{movingBox(index)}});
     }
@@ -288,6 +291,7 @@ TEST("the same vehicle misread under a new track is not reported next to its pla
     CHECK_EQ(harness.sink.events().size(), std::size_t{1});
 
     // A different plate that is accepted is always reported, however similar.
+    harness.ocr->cycle.clear();
     harness.ocr->override_text = "153JTA02";
     for (int index = 0; index < 50; ++index) {
         harness.step({});
