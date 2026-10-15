@@ -33,6 +33,33 @@ def find_videos(directory):
                   key=lambda path: path.name.lower())
 
 
+def print_unconfirmed_details(events, events_path, log_path):
+    """Show the recognizer's evidence without presenting guesses as accepted plates."""
+    statuses = Counter(event.get("status", "UNKNOWN") for event in events)
+    if statuses:
+        print("  Event statuses: %s" % ", ".join(
+            "%s=%d" % (status, count) for status, count in sorted(statuses.items())), flush=True)
+    shown = 0
+    for event in events:
+        text = event.get("normalized_plate") or event.get("raw_plate")
+        if not text or event.get("status") in ACCEPTED:
+            continue
+        details = [str(event.get("status", "UNKNOWN"))]
+        confidence = event.get("confidence")
+        if isinstance(confidence, (int, float)):
+            details.append("confidence=%.3f" % confidence)
+        if "agreeing_observations" in event and "observation_count" in event:
+            details.append("votes=%s/%s" % (event["agreeing_observations"],
+                                           event["observation_count"]))
+        print("  Unconfirmed candidate: %s (%s)" %
+              (json.dumps(text, ensure_ascii=False), ", ".join(details)), flush=True)
+        shown += 1
+        if shown >= 5:
+            break
+    print("  Events: %s" % events_path, flush=True)
+    print("  Log: %s" % log_path, flush=True)
+
+
 def run_clip(command, source, photos_dir, native, events_out, log_out):
     """Save directly into the results whenever the recognizer can write there.
 
@@ -91,6 +118,8 @@ def main():
     parser.add_argument("--native", action="store_true", help="use a local binary instead of Jetson Docker")
     parser.add_argument("--binary", default="build/kz_anpr", help="local binary for --native")
     parser.add_argument("--config", help="override the existing Docker/native configuration")
+    parser.add_argument("--log-level", choices=("error", "warn", "info", "debug"),
+                        help="recognizer log detail (debug records OCR and crop rejections)")
     args = parser.parse_args()
 
     def project_path(value):
@@ -151,6 +180,8 @@ def main():
         command = [str(PROJECT / "tools/jetson_docker.sh"), "run"]
         if args.config:
             command += ["--config", args.config]
+    if args.log_level:
+        command += ["--log-level", args.log_level]
 
     if args.output_dir:
         output = project_path(args.output_dir)
@@ -232,6 +263,8 @@ def main():
             json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print("  %s | plates: %s | events: %d" %
               (status, ", ".join(plates) or "-", len(events)), flush=True)
+        if status == "NO_CONFIRMED_PLATES":
+            print_unconfirmed_details(events, events_path, log_path)
         if snapshots:
             print("  Photos: %s (%d)" % (photos_dir, len(snapshots)), flush=True)
         for error in snapshot_errors:

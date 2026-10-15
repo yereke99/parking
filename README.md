@@ -98,6 +98,17 @@ File errors do not stop the remaining clips. Configuration/model errors stop the
 they affect every clip; a failed run returns a nonzero exit code. Completed results are saved
 after each clip.
 
+For `NO_CONFIRMED_PLATES`, the terminal also shows the event status counts, up to five
+unconfirmed candidates with their confidence and vote counts, and the event/log paths. These
+candidates are not accepted plates and do not get confirmation photos. To inspect why OCR or
+the image-quality gate rejected readings, replay one clip with detailed logs:
+
+```sh
+make run-videos VIDEOS='IMG_5666.mp4' VIDEO_ARGS='--log-level debug'
+```
+
+This logging option uses the existing binary; updating the batch report needs no image rebuild.
+
 The four iPhone files are 4K, 10-bit HEVC with HLG HDR; the first three also carry a 90-degree
 rotation. Decoder support on the Jetson must be checked with its existing OpenCV backend. To
 avoid changing any container packages, prepare compatible copies on a machine where FFmpeg is

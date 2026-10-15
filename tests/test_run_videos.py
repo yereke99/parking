@@ -27,8 +27,10 @@ class VideoPhotosTest(unittest.TestCase):
         (self.project / "video" / "parking.mp4").write_bytes(b"fixture")
         self.output = self.root / "results"
         self.calls = []
+        self.console = io.StringIO()
 
-    def run_batch(self, native=True, accepted=True, save_photo=True, exit_code=0, interrupt=False):
+    def run_batch(self, native=True, accepted=True, save_photo=True, exit_code=0, interrupt=False,
+                  event_updates=None, log_level=None):
         def recognize(command, cwd, stdout, stderr):
             self.calls.append(command)
             target = command[command.index("--snapshots-dir") + 1]
@@ -44,6 +46,8 @@ class VideoPhotosTest(unittest.TestCase):
                 staging.mkdir(parents=True, exist_ok=True)
                 (staging / photo_name).write_bytes(b"JPEG fixture")
                 event.update(snapshot_path=target + "/" + photo_name, snapshot_timestamp_ms=8400)
+            if event_updates:
+                event.update(event_updates)
             stdout.write(json.dumps(event) + "\n")
             if interrupt:
                 raise KeyboardInterrupt()
@@ -52,10 +56,12 @@ class VideoPhotosTest(unittest.TestCase):
         argv = ["run_videos.py", "--output-dir", str(self.output)]
         if native:
             argv.append("--native")
+        if log_level:
+            argv += ["--log-level", log_level]
         with mock.patch.object(runner, "PROJECT", self.project), \
                 mock.patch.object(sys, "argv", argv), \
                 mock.patch.object(runner.subprocess, "run", side_effect=recognize), \
-                contextlib.redirect_stdout(io.StringIO()):
+                contextlib.redirect_stdout(self.console):
             code = runner.main()
         summary = json.loads((self.output / "summary.json").read_text())[0]
         event = json.loads((self.output / summary["events_file"]).read_text())
@@ -108,6 +114,40 @@ class VideoPhotosTest(unittest.TestCase):
         self.assertEqual(summary["status"], "NO_CONFIRMED_PLATES")
         self.assertEqual(summary["snapshots"], [])
         self.assertFalse((self.output / summary["photos_dir"]).exists())
+
+    def test_unconfirmed_output_shows_evidence_without_accepting_the_candidate(self):
+        code, summary, event = self.run_batch(accepted=False, event_updates={
+            "confidence": 0.35, "observation_count": 6, "agreeing_observations": 1,
+        })
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["recognized_plates"], [])
+        self.assertEqual(summary["snapshots"], [])
+        self.assertIn("Event statuses: LOW_CONFIDENCE=1", self.console.getvalue())
+        self.assertIn('Unconfirmed candidate: "152JTA02"', self.console.getvalue())
+        self.assertIn("confidence=0.350, votes=1/6", self.console.getvalue())
+        self.assertIn(str(self.output / summary["events_file"]), self.console.getvalue())
+        self.assertIn(str(self.output / summary["log_file"]), self.console.getvalue())
+
+    def test_no_text_output_points_to_existing_diagnostics_without_inventing_a_plate(self):
+        code, summary, event = self.run_batch(accepted=False, event_updates={
+            "status": "INVALID_FORMAT", "normalized_plate": "", "raw_plate": "",
+        })
+        self.assertEqual(code, 0)
+        self.assertIn("Event statuses: INVALID_FORMAT=1", self.console.getvalue())
+        self.assertNotIn("Unconfirmed candidate:", self.console.getvalue())
+        self.assertEqual(summary["recognized_plates"], [])
+
+    def test_debug_log_level_is_forwarded_to_the_existing_native_recognizer(self):
+        code, summary, event = self.run_batch(log_level="debug")
+        self.assertEqual(code, 0)
+        command = self.calls[0]
+        self.assertEqual(command[command.index("--log-level") + 1], "debug")
+
+    def test_debug_log_level_is_forwarded_to_the_existing_docker_recognizer(self):
+        code, summary, event = self.run_batch(native=False, log_level="debug")
+        self.assertEqual(code, 0)
+        command = self.calls[0]
+        self.assertEqual(command[command.index("--log-level") + 1], "debug")
 
     def test_missing_photo_reports_failure_but_keeps_the_plate(self):
         code, summary, event = self.run_batch(save_photo=False)
