@@ -110,6 +110,8 @@ ocr:
   #       --output models/nomeroff-onnx/kz.onnx
   # (the Jetson image does this itself; see models/README.md).
   model: models/nomeroff-onnx/kz.onnx
+  # Align the plate outline before OCR; keep the original crop when no outline is found.
+  rectify_plates: true
   # Mean character confidence a reading needs before it reaches the validator.
   min_confidence: 0.40
   # A reading containing any character below this is discarded.

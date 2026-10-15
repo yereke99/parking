@@ -86,13 +86,17 @@ ImageQuality QualityAssessor::evaluate(const cv::Mat& crop, const BoundingBox& b
                             0.20 * brightness_score + 0.20 * clipping_score +
                             0.10 * quality.size_score);
 
+    // Black lettering on a reflective white plate can have many endpoint pixels while its
+    // characters remain sharp. Clipping alone only rejects crops whose contrast was lost.
+    const bool lost_clipped_detail =
+        quality.clipping_ratio > config_.max_clipping_ratio && contrast_score < 1.0;
     if (quality.sharpness < config_.min_sharpness) {
         quality.rejection = QualityRejection::kTooBlurred;
     } else if (quality.brightness < config_.min_brightness) {
         quality.rejection = QualityRejection::kTooDark;
     } else if (quality.brightness > config_.max_brightness) {
         quality.rejection = QualityRejection::kTooBright;
-    } else if (quality.clipping_ratio > config_.max_clipping_ratio) {
+    } else if (lost_clipped_detail) {
         quality.rejection = QualityRejection::kClipped;
     } else if (quality.score < config_.min_score) {
         quality.rejection = QualityRejection::kLowScore;

@@ -18,8 +18,9 @@ namespace anpr {
 ///
 /// tools/export_nomeroff_onnx.py rebuilds the network with the image's PyTorch 1.10 and exports
 /// it, because Nomeroff itself needs Python >= 3.9 and PyTorch >= 1.12, which JetPack 4 lacks.
-/// Preprocessing reproduces Nomeroff Net's own pipeline for one crop: it passes BGR crops and
-/// swaps their channels before normalize_img, so the network sees RGB, resized to 200x50
+/// A visible plate outline is rectified first unless disabled in the OCR configuration.
+/// Tensor preprocessing follows Nomeroff: it passes BGR crops and swaps their channels before
+/// normalize_img, so the network sees RGB, resized to 200x50
 /// (bilinear) and min-max scaled to 0..1 over the whole crop, in CHW order. Greedy CTC decoding
 /// gives the text and per-character confidences.
 class NomeroffOnnx final : public IPlateOcr {
@@ -40,6 +41,7 @@ private:
     PipelineMetrics* metrics_;
     int steps_{0};
     int classes_{0};
+    cv::Mat rectified_;
     cv::Mat rgb_;
     cv::Mat resized_;
     cv::Mat scaled_;

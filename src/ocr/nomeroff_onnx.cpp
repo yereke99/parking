@@ -9,6 +9,7 @@
 
 #include "anpr/common/logging.hpp"
 #include "anpr/ocr/nomeroff_decoding.hpp"
+#include "anpr/ocr/plate_rectifier.hpp"
 
 namespace anpr {
 
@@ -71,7 +72,11 @@ OcrResult NomeroffOnnx::recognize(const cv::Mat& plate) {
         ScopedTimer timer(metrics_->ocr_preprocess);
         // Nomeroff Net's pipeline passes BGR crops, and its TextDetector swaps the channels
         // (convert_cv_zones_rgb_to_bgr) before normalize_img: the network sees RGB.
-        cv::cvtColor(plate, rgb_,
+        const cv::Mat& aligned =
+            config_.rectify_plates &&
+                    rectifyPlate(plate, cv::Size(kInputWidth, kInputHeight), rectified_)
+                ? rectified_ : plate;
+        cv::cvtColor(aligned, rgb_,
                      plate.channels() == 3 ? cv::COLOR_BGR2RGB : cv::COLOR_GRAY2RGB);
         cv::resize(rgb_, resized_, cv::Size(kInputWidth, kInputHeight), 0.0, 0.0,
                    cv::INTER_LINEAR);

@@ -40,6 +40,13 @@ TEST("unknown keys are reported instead of silently ignored") {
     CHECK_EQ(loaded.unknown_keys.front(), std::string("detector.confidence_treshold"));
 }
 
+TEST("OCR plate rectification can be disabled for a calibrated source") {
+    const auto loaded = anpr::loadConfigText("ocr:\n  rectify_plates: false\n");
+    CHECK(loaded.ok);
+    CHECK(loaded.unknown_keys.empty());
+    CHECK(!loaded.config.ocr.rectify_plates);
+}
+
 TEST("validation profiles come from the config file") {
     const auto loaded = anpr::loadConfigText(R"(
 validation:

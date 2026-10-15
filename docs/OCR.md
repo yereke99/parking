@@ -31,7 +31,13 @@ where reduced precision is most likely to change a reading.
 
 ## One crop, step by step
 
-`NomeroffOnnx` (`src/ocr/nomeroff_onnx.cpp`) reproduces Nomeroff's preprocessing exactly:
+The axis-aligned detector box may contain a tilted plate, its frame and part of the bumper.
+Before OCR, `PlateRectifier` finds a large convex plate outline using brightness and edges,
+then removes the perspective with a four-corner transform. If no suitable outline is found,
+or the crop is already aligned, it keeps the original crop. `ocr.rectify_plates: false` bypasses
+this step for a calibrated source. The model, its weights and the confirmation vote are unchanged.
+
+`NomeroffOnnx` (`src/ocr/nomeroff_onnx.cpp`) then applies Nomeroff's tensor preprocessing:
 
 1. BGR to RGB (Nomeroff swaps the channels of the BGR crops it is given);
 2. resize to 200x50, bilinear;
@@ -58,6 +64,11 @@ profile). `ocr.max_attempts` caps the OCR calls per vehicle. The Jetson profile 
 Crops below `quality.min_plate_width_px` x `quality.min_plate_height_px` (90 x 22 on the Jetson)
 never reach the OCR: smaller characters are only 6-8 px wide, and a 66x20 crop of `152JTA02` was
 once confirmed as `152JT02`.
+
+The quality gate still rejects small, blurred, dark and washed-out crops. A reflective white
+background with sharp black lettering can contain many clipped pixels without losing the text;
+the clipping gate therefore rejects high clipping only when contrast is also below its reference.
+Clipped pixels still reduce the quality score and hence the observation's weight in the vote.
 
 ## Limits
 

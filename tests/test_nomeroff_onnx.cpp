@@ -1,12 +1,14 @@
 #include "anpr/ocr/nomeroff_onnx.hpp"
 
 #include <cstdint>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include "anpr/common/metrics.hpp"
 #include "anpr/ocr/nomeroff_decoding.hpp"
@@ -123,4 +125,31 @@ TEST("nomeroff_onnx returns the decoded plate and applies the confidence gates")
     CHECK(result.rejection == anpr::OcrRejection::kNoText);
     CHECK(ocr.recognize(cv::Mat()).rejection == anpr::OcrRejection::kEmptyCrop);
     CHECK(ocr.backendName() == "nomeroff_fake");
+}
+
+TEST("nomeroff_onnx rectifies an oblique plate before filling the tensor and supports bypass") {
+    const cv::Mat crop = cv::imread("tests/fixtures/plate_skewed_702BAC01.png");
+    CHECK(!crop.empty());
+    const cv::Mat original = crop.clone();
+    std::vector<float> raw_input;
+    for (bool enabled : {false, true}) {
+        auto config = kzConfig();
+        config.rectify_plates = enabled;
+        anpr::PipelineMetrics metrics;
+        auto session = std::make_unique<FakeNomeroffSession>();
+        auto& fake = *session;
+        anpr::NomeroffOnnx ocr(config, std::move(session), &metrics);
+        (void)ocr.recognize(crop);
+        if (!enabled) {
+            raw_input = fake.input_;
+        } else {
+            CHECK_EQ(fake.input_.size(), raw_input.size());
+            double difference = 0.0;
+            for (std::size_t index = 0; index < raw_input.size(); ++index) {
+                difference += std::abs(fake.input_[index] - raw_input[index]);
+            }
+            CHECK(difference / static_cast<double>(raw_input.size()) > 0.05);
+        }
+    }
+    CHECK_NEAR(cv::norm(crop, original, cv::NORM_INF), 0.0, 0.0);
 }

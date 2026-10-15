@@ -113,6 +113,8 @@ struct OcrConfig {
     /// Nomeroff Net 4.0.1's Kazakhstan text reader as ONNX, made by tools/export_nomeroff_onnx.py.
     /// The Jetson image builds it at /opt/kz-anpr/models/nomeroff-onnx/kz.onnx.
     std::string model{"models/nomeroff-onnx/kz.onnx"};
+    /// Remove perspective from a detected plate outline before resizing it for OCR.
+    bool rectify_plates{true};
     /// Reject an OCR reading whose mean character confidence is below this.
     double min_confidence{0.55};
     /// Reject a reading whose weakest character is below this.
@@ -136,7 +138,8 @@ struct QualityConfig {
     /// Mean intensity limits. Outside them the crop is too dark or too washed out.
     double min_brightness{35.0};
     double max_brightness{225.0};
-    /// Fraction of fully black plus fully white pixels tolerated.
+    /// Fraction of fully black plus fully white pixels tolerated when contrast is low.
+    /// A sharp black-on-white plate retains detail even with a clipped reflective background.
     double max_clipping_ratio{0.22};
     /// Combined score a crop must reach to be worth an OCR call.
     double min_score{0.30};

@@ -328,6 +328,7 @@ void readAll(Reader& reader, AnprConfig& config, std::string& error) {
     reader.get("detector.require_motion_in_idle", config.detector.require_motion_in_idle);
 
     reader.get("ocr.model", config.ocr.model);
+    reader.get("ocr.rectify_plates", config.ocr.rectify_plates);
     reader.get("ocr.min_confidence", config.ocr.min_confidence);
     reader.get("ocr.min_char_confidence", config.ocr.min_char_confidence);
     reader.get("ocr.max_attempts", config.ocr.max_attempts);

@@ -117,6 +117,7 @@ if(KZ_ANPR_BUILD_RUNTIME)
             src/inference/inference_session.cpp
             src/inference/opencv_dnn_session.cpp
             src/ocr/nomeroff_onnx.cpp
+            src/ocr/plate_rectifier.cpp
             src/ocr/plate_ocr.cpp
             src/pipeline/anpr_pipeline.cpp
             src/pipeline/motion_detector.cpp
@@ -294,6 +295,7 @@ if(KZ_ANPR_BUILD_TESTS)
             tests/test_moving_recognition.cpp
             tests/test_multi_camera.cpp
             tests/test_nomeroff_onnx.cpp
+            tests/test_plate_rectifier.cpp
             tests/test_quality.cpp
         )
         target_link_libraries(kz_anpr_runtime_tests PRIVATE kz_anpr_runtime)

@@ -74,6 +74,27 @@ TEST("an overexposed crop is rejected") {
     CHECK(!quality.acceptable());
 }
 
+TEST("a sharp reflective plate keeps readable contrast despite clipped black and white pixels") {
+    anpr::QualityAssessor assessor(qualityConfig());
+    const cv::Mat plate = syntheticPlate(200, 60, 255, 0);
+    const auto quality = assessor.evaluate(plate, anpr::BoundingBox{100, 100, 200, 60});
+    CHECK(quality.clipping_ratio > 0.90);
+    CHECK(quality.contrast >= qualityConfig().contrast_reference);
+    CHECK(quality.acceptable());
+}
+
+TEST("clipped low-contrast lettering is still rejected") {
+    auto config = qualityConfig();
+    config.max_brightness = 250.0;  // Isolate the clipping gate from the mean-brightness gate.
+    anpr::QualityAssessor assessor(config);
+    const cv::Mat plate = syntheticPlate(200, 60, 254, 180);
+    const auto quality = assessor.evaluate(plate, anpr::BoundingBox{100, 100, 200, 60});
+    CHECK(quality.sharpness > config.min_sharpness);
+    CHECK(quality.clipping_ratio > config.max_clipping_ratio);
+    CHECK(quality.contrast < config.contrast_reference);
+    CHECK_EQ(quality.rejection, anpr::QualityRejection::kClipped);
+}
+
 TEST("an empty crop is rejected without crashing") {
     anpr::QualityAssessor assessor(qualityConfig());
     const auto quality = assessor.evaluate(cv::Mat{}, anpr::BoundingBox{0, 0, 0, 0});
