@@ -23,6 +23,9 @@ using namespace anpr::cameras;
 
 namespace {
 
+// config/cameras.yaml is operator-editable. Defaults and examples belong to fixed test data.
+const char* const kCameraDefaultsFixture = "tests/fixtures/cameras.defaults.yaml";
+
 bool contains(const std::string& text, const std::string& part) {
     return text.find(part) != std::string::npos;
 }
@@ -551,20 +554,20 @@ cameras:
     CHECK(loaded.config.discovery.scan_ports.empty());
 }
 
-TEST("camera config: the shipped config/cameras.yaml equals the defaults") {
-    const auto loaded = loadCameraModeConfigFile("config/cameras.yaml");
+TEST("camera config: the reference YAML equals the defaults") {
+    const auto loaded = loadCameraModeConfigFile(kCameraDefaultsFixture);
     CHECK(loaded.ok);
     CHECK_EQ(loaded.error, std::string{});
     if (!loaded.unknown_keys.empty()) {
-        anpr_test::recordFailure("unknown key in config/cameras.yaml: " + loaded.unknown_keys[0]);
+        anpr_test::recordFailure("unknown key in camera defaults fixture: " + loaded.unknown_keys[0]);
         return;
     }
     CHECK_EQ(firstDifference(loaded.config, CameraModeConfig{}), std::string{});
 }
 
-TEST("camera config: the commented camera examples in config/cameras.yaml are valid") {
+TEST("camera config: the reference YAML camera examples are valid") {
     // Uncomment the example block and load it, so the documentation cannot drift from the parser.
-    std::ifstream input("config/cameras.yaml");
+    std::ifstream input(kCameraDefaultsFixture);
     CHECK(static_cast<bool>(input));
     std::ostringstream text;
     std::string line;
